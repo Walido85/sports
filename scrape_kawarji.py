@@ -1,97 +1,138 @@
 import requests
 from bs4 import BeautifulSoup
-import firebase_admin
-from firebase_admin import credentials, firestore
+from google.cloud import firestore
+from google.oauth2 import service_account
 import os
 import json
-from datetime import datetime
+import re
 
-# --- 1. FIREBASE CONFIGURATION ---
+# --- CONNECT ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
-    print("Error: FIREBASE_CREDENTIALS secret missing.")
+    print("No credentials.")
     exit(1)
 
 cred_dict = json.loads(firebase_secret)
-cred = credentials.Certificate(cred_dict)
+credentials = service_account.Credentials.from_service_account_info(cred_dict)
+db = firestore.Client(
+    project='tunisia-radios-d7aa8',
+    credentials=credentials,
+    database='walid'
+)
+print("Connected.")
 
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred, {'projectId': 'tunisia-radios-d7aa8'})
+headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-# Targeting your 'walid' database
-db = firestore.client(database_id='walid')
+def scrape_league(url, doc_results, doc_standings):
+    r = requests.get(url, headers=headers)
+    if r.status_code != 200:
+        print(f"Failed: {url} ({r.status_code})")
+        return
+    soup = BeautifulSoup(r.content, 'html.parser')
 
-def scrape_kawarji():
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    
-    # --- PART A: CLASSEMENT (STANDINGS) ---
-    standings_url = "https://www.kawarji.com/classement/premier-league/2025-2026"
-    standings = []
-    
-    try:
-        res_s = requests.get(standings_url, headers=headers, timeout=20)
-        soup_s = BeautifulSoup(res_s.content, 'html.parser')
+    # --- RESULTS ---
+    matches = []
+    for item in soup.find_all('div', class_='match-item'):
+        parts = item.find_all('div')
+        text = item.get_text(separator='|').strip()
+        # Extract home, score, away
+        home = item.find('div', class_=lambda c: c and 'home' in c)
+        away = item.find('div', class_=lambda c: c and 'away' in c)
+        score = item.find('div', class_=lambda c: c and 'score' in c)
+        date_div = item.find('div', class_=lambda c: c and 'date' in c)
         
-        # Exact selector from your Node.js script and .mht analysis
-        table = soup_s.find('table', class_='table-classement')
-        if table:
-            for i, row in enumerate(table.find_all('tr')):
-                if i == 0: continue # Skip header
+        home_text = home.get_text(strip=True) if home else ''
+        away_text = away.get_text(strip=True) if away else ''
+        score_text = score.get_text(strip=True) if score else '-'
+        date_text = date_div.get_text(strip=True) if date_div else ''
+        
+        if home_text and away_text:
+            matches.append({
+                "date": date_text,
+                "home": home_text,
+                "score": score_text,
+                "away": away_text
+            })
+    
+    if matches:
+        db.collection('leagues').document(doc_results).set({"matches": matches})
+        print(f"Saved {len(matches)} results → {doc_results}")
+    else:
+        print(f"No results found for {doc_results}")
+
+    # --- STANDINGS ---
+    standings = []
+    tabs = soup.find_all('div', class_='tab-pane')
+    for tab in tabs:
+        rows = tab.find_all('tr')
+        if rows:
+            for row in rows[1:]:
                 cols = row.find_all('td')
-                if len(cols) >= 6:
+                if len(cols) >= 4:
                     standings.append({
-                        "rank": cols[0].get_text(strip=True),
+                        "position": cols[0].get_text(strip=True),
                         "team": cols[1].get_text(strip=True),
                         "played": cols[2].get_text(strip=True),
-                        "gd": cols[4].get_text(strip=True),
-                        "pts": cols[5].get_text(strip=True)
+                        "points": cols[3].get_text(strip=True)
                     })
-        print(f"Scraped {len(standings)} standing entries.")
-    except Exception as e:
-        print(f"Standings Error: {e}")
+            break
+        # Try non-table standings
+        text = tab.get_text(strip=True)
+        if 'pts' in text and len(text) > 50:
+            # Widget standings format: pos+abbr+team+j+pts
+            pattern = r'(\d+)\s*([A-Z]{2,4})\s*(.+?)\s*(\d+)\s*(\d+)'
+            for m in re.finditer(pattern, text):
+                standings.append({
+                    "position": m.group(1),
+                    "team": m.group(3).strip(),
+                    "played": m.group(4),
+                    "points": m.group(5)
+                })
+            if standings:
+                break
 
-    # --- PART B: RESULTATS (MATCHES) ---
-    # Based on the J25 URL you focus on
-    results_url = "https://www.kawarji.com/resultats/ligue1/2025-2026/25"
-    matches = []
-    
-    try:
-        res_m = requests.get(results_url, headers=headers, timeout=20)
-        soup_m = BeautifulSoup(res_m.content, 'html.parser')
-        
-        # Pattern from .mht: Matches are in 'row mb-2' blocks
-        match_rows = soup_m.find_all('div', class_='row mb-2')
-        for row in match_rows:
-            teams = row.find_all('div', class_='col-4')
-            score_box = row.find('div', class_='col-2')
-            
-            if len(teams) >= 2 and score_box:
-                home = teams[0].get_text(strip=True)
-                away = teams[1].get_text(strip=True)
-                score = score_box.get_text(strip=True)
-                if home and away:
-                    matches.append({"home": home, "away": away, "score": score})
-        print(f"Scraped {len(matches)} match results.")
-    except Exception as e:
-        print(f"Results Error: {e}")
+    if standings:
+        db.collection('leagues').document(doc_standings).set({"table": standings})
+        print(f"Saved {len(standings)} standings → {doc_standings}")
+    else:
+        print(f"No standings found for {doc_standings}")
 
-    return standings, matches
 
-# --- 3. DATABASE SYNC ---
-s_data, m_data = scrape_kawarji()
+# --- SCRAPE ALL LEAGUES ---
+scrape_league(
+    'https://www.kawarji.com/resultats/',
+    'results_ligue1_tunisia',
+    'standings_ligue1_tunisia'
+)
 
-# Save Standings
-if s_data:
-    db.collection('sports_data').document('ligue-1-standings').set({
-        "lastUpdated": datetime.utcnow().isoformat(),
-        "standings": s_data
-    })
+scrape_league(
+    'https://www.kawarji.com/resultats-premier-league-angleterre/',
+    'results_premier_league',
+    'standings_premier_league'
+)
 
-# Save Results
-if m_data:
-    db.collection('sports_data').document('ligue-1-results').set({
-        "lastUpdated": datetime.utcnow().isoformat(),
-        "matches": m_data
-    })
+scrape_league(
+    'https://www.kawarji.com/resultats-liga-espagne/',
+    'results_la_liga',
+    'standings_la_liga'
+)
 
-print("Process finished.")
+scrape_league(
+    'https://www.kawarji.com/resultats-serie-a-italie/',
+    'results_serie_a',
+    'standings_serie_a'
+)
+
+scrape_league(
+    'https://www.kawarji.com/resultats-ligue-1-france/',
+    'results_ligue1_france',
+    'standings_ligue1_france'
+)
+
+scrape_league(
+    'https://www.kawarji.com/resultats-bundesliga-allemagne/',
+    'results_bundesliga',
+    'standings_bundesliga'
+)
+
+print("Done.")
