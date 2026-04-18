@@ -12,19 +12,17 @@ if firebase_secret:
     cred_dict = json.loads(firebase_secret)
     cred = credentials.Certificate(cred_dict)
     
-    project_id = 'tunisia-radios-d7aa8'
-    
+    # Initialize the app with your project ID
     try:
-        # We initialize specifically for the 'default' database in 'eur3'
         firebase_admin.initialize_app(cred, {
-            'projectId': project_id,
-            'databaseId': 'default' 
+            'projectId': 'tunisia-radios-d7aa8'
         })
     except ValueError:
         pass
         
-    db = firestore.client()
-    print(f"Connected to {project_id} database: default")
+    # CORRECT SYNTAX: Explicitly targeting the (default) database
+    db = firestore.client(database='(default)')
+    print("Connected to (default) database successfully.")
 else:
     print("Error: FIREBASE_CREDENTIALS secret not found.")
     exit(1)
@@ -71,6 +69,6 @@ if response.status_code == 200:
         db.collection('leagues').document('live_scores').set({"matches": live_matches})
         print("Live scores saved!")
 
-    print("Success: Scrape finished.")
+    print("Scrape process complete.")
 else:
-    print(f"Failed to load website. Status: {response.status_code}")
+    print(f"Failed. Status: {response.status_code}")
