@@ -10,7 +10,16 @@ firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if firebase_secret:
     cred_dict = json.loads(firebase_secret)
     cred = credentials.Certificate(cred_dict)
-    firebase_admin.initialize_app(cred)
+    
+    # Force connection to your specific Project ID
+    try:
+        firebase_admin.initialize_app(cred, {
+            'projectId': 'tunisia-radios-d7aa8',
+        })
+    except ValueError:
+        # This handles cases where the app is already initialized
+        pass
+        
     db = firestore.client()
 else:
     print("Error: FIREBASE_CREDENTIALS secret not found.")
@@ -26,6 +35,7 @@ if response.status_code == 200:
     
     # --- 3. SMART SCRAPE STANDINGS ---
     standings = []
+    # Search for the standings table dynamically
     table = soup.find(lambda tag: tag.name == 'table' and 'équipe' in tag.text.lower())
     
     if table:
@@ -40,27 +50,26 @@ if response.status_code == 200:
                     "points": cols[3].text.strip()
                 })
         if standings:
-            # UPDATED: Sending to your 'leagues' collection
-            db.collection('leagues').document('standings_ligue1').set({"table": standings})
-            print("Standings updated successfully!")
+            db.collection('leagues').document('standings_ligue_1').set({"table": standings})
+            print("Standings saved to Firestore!")
 
-    # --- 4. SMART SCRAPE LIVE SCORES / DIRECTS ---
+    # --- 4. SMART SCRAPE LIVE SCORES ---
     live_matches = []
+    # Search for the section titled "Directs"
     directs_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'div'] and 'Directs' in tag.text)
     
     if directs_header:
-        matches_container = directs_header.find_next('div')
-        if matches_container:
-            for match_text in matches_container.stripped_strings:
-                if len(match_text) > 5: 
-                    live_matches.append({"match_info": match_text})
+        container = directs_header.find_next('div')
+        if container:
+            for item in container.stripped_strings:
+                if len(item) > 5:
+                    live_matches.append({"info": item})
                     
     if live_matches:
-        # UPDATED: Sending to your 'leagues' collection
         db.collection('leagues').document('live_scores').set({"matches": live_matches})
-        print("Live scores updated successfully!")
+        print("Live scores saved to Firestore!")
 
-    print("Scrape run finished.")
+    print("Success: Scrape finished.")
 
 else:
-    print(f"Failed to load Kawarji. Status Code: {response.status_code}")
+    print(f"Failed to load website. Status: {response.status_code}")
