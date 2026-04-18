@@ -12,7 +12,7 @@ if firebase_secret:
     cred_dict = json.loads(firebase_secret)
     cred = credentials.Certificate(cred_dict)
     
-    # Initialize the app with your project ID
+    # Initialize the app. For the (default) database, we just need the project ID.
     try:
         firebase_admin.initialize_app(cred, {
             'projectId': 'tunisia-radios-d7aa8'
@@ -20,9 +20,10 @@ if firebase_secret:
     except ValueError:
         pass
         
-    # CORRECT SYNTAX: Explicitly targeting the (default) database
-    db = firestore.client(database='(default)')
-    print("Connected to (default) database successfully.")
+    # In Firebase Admin SDK, to use the default database, you call it without arguments.
+    # It will automatically use the (default) database in your project.
+    db = firestore.client()
+    print("Connected to Firestore successfully.")
 else:
     print("Error: FIREBASE_CREDENTIALS secret not found.")
     exit(1)
