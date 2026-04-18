@@ -5,95 +5,84 @@ from firebase_admin import credentials, firestore
 import os
 import json
 
-# --- 1. FIRESTORE CONNECTION ---
+# --- 1. CONNECTION ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
-if not firebase_secret:
-    print("FATAL: Secret FIREBASE_CREDENTIALS not found.")
-    exit(1)
-
 cred_dict = json.loads(firebase_secret)
 cred = credentials.Certificate(cred_dict)
 
 if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred, {
-        'projectId': 'tunisia-radios-d7aa8'
-    })
+    firebase_admin.initialize_app(cred, {'projectId': 'tunisia-radios-d7aa8'})
 
-# We use 'database_id' specifically for the 'walid' database
 db = firestore.client(database_id='walid')
 
-# --- 2. AGGRESSIVE SCRAPING ---
+# --- 2. TARGETED SCRAPE ---
 URL = 'https://www.kawarji.com/resultats/ligue1/2025-2026/25'
-# Realistic browser headers to prevent being blocked
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': 'https://www.google.com/'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
 }
 
-def get_data():
-    try:
-        response = requests.get(URL, headers=HEADERS, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        league_standings = []
-        match_results = []
-
-        # --- A. CLASSEMENT (TABLE) ---
-        # We search for ANY table containing the text 'Pts'
-        target_table = None
-        for table in soup.find_all('table'):
-            if 'pts' in table.get_text().lower():
-                target_table = table
-                break
-        
-        if target_table:
-            for row in target_table.find_all('tr')[1:]:
-                cols = row.find_all('td')
-                if len(cols) >= 4:
-                    league_standings.append({
-                        "rank": cols[0].get_text(strip=True),
-                        "team": cols[1].get_text(strip=True),
-                        "j": cols[2].get_text(strip=True),
-                        "pts": cols[3].get_text(strip=True)
-                    })
-
-        # --- B. RESULTS ---
-        # Look specifically for the rows that represent matches
-        for row in soup.find_all('div', class_='row'):
-            teams = row.find_all('div', class_='col-4')
-            score = row.find('div', class_='col-2')
-            if len(teams) >= 2 and score:
-                home = teams[0].get_text(strip=True)
-                away = teams[1].get_text(strip=True)
-                res = score.get_text(strip=True)
-                # Ensure it's not empty and contains a digit or 'vs'
-                if home and away and (any(c.isdigit() for c in res) or 'vs' in res.lower()):
-                    match_results.append({"home": home, "away": away, "score": res})
-
-        return league_standings, match_results
-    except Exception as e:
-        print(f"Connection/Parsing Error: {e}")
+def scrape():
+    res = requests.get(URL, headers=HEADERS, timeout=20)
+    print(f"Status Code: {res.status_code}")
+    
+    # Debug: see what the site is sending back
+    if "forbidden" in res.text.lower() or "captcha" in res.text.lower():
+        print("Blocked by security. Retrying with session...")
         return [], []
 
-# --- 3. DATABASE UPDATE ---
-standings, results = get_data()
+    soup = BeautifulSoup(res.content, 'html.parser')
+    
+    standings = []
+    matches = []
 
-if standings:
+    # --- STANDINGS ---
+    # Look for the table with ranking data
+    table = soup.find('table') 
+    if table:
+        for row in table.find_all('tr')[1:]:
+            cols = row.find_all('td')
+            if len(cols) >= 4:
+                standings.append({
+                    "rank": cols[0].get_text(strip=True),
+                    "team": cols[1].get_text(strip=True),
+                    "played": cols[2].get_text(strip=True),
+                    "pts": cols[3].get_text(strip=True)
+                })
+
+    # --- MATCHES ---
+    # Based on the screenshot: Teams are in cols, score is in the middle
+    # We look for the "row" containers specifically in the results section
+    for row in soup.find_all('div', class_='row'):
+        cells = row.find_all('div')
+        # On this specific page, Kawarji uses a 3-column layout for scores
+        if len(cells) >= 3:
+            t1 = cells[0].get_text(strip=True)
+            score = cells[1].get_text(strip=True)
+            t2 = cells[2].get_text(strip=True)
+            
+            # Filter: Must look like a score (e.g. 1-0 or 0-1)
+            if '-' in score and len(score) <= 5:
+                matches.append({"home": t1, "away": t2, "score": score})
+
+    return standings, matches
+
+# --- 3. UPLOAD ---
+standings_data, matches_data = scrape()
+
+if standings_data:
     db.collection('leagues').document('tunisia_ligue_1').set({
-        "table": standings,
+        "table": standings_data,
         "updated": firestore.SERVER_TIMESTAMP
     })
-    print(f"Successfully pushed {len(standings)} teams.")
-else:
-    print("Failed to find Standings Table. Check URL/Selectors.")
+    print(f"Standings updated: {len(standings_data)} teams")
 
-if results:
+if matches_data:
     db.collection('leagues').document('fixtures_results').set({
-        "matches": results,
+        "matches": matches_data,
         "updated": firestore.SERVER_TIMESTAMP
     })
-    print(f"Successfully pushed {len(results)} matches.")
-else:
-    print("Failed to find Results. Check URL/Selectors.")
+    print(f"Matches updated: {len(matches_data)} results")
+
+if not standings_data and not matches_data:
+    print("CRITICAL: Scraper returned zero data.")
