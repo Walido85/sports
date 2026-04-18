@@ -30,25 +30,34 @@ def scrape_matches(url, results_doc, fixtures_doc):
     soup = BeautifulSoup(r.content, 'html.parser')
     results = []
     fixtures = []
-    for item in soup.find_all('li', class_='match-item'):
+    for item in soup.find_all(class_='match-item'):
+        # Try h5 first, then team links as fallback
         h5_teams = item.find_all('h5')
+        team_links = item.find_all('a', href=lambda h: h and '/equipe/' in h)
+        
+        teams = []
+        if len(h5_teams) >= 2:
+            teams = [h5_teams[0].get_text(strip=True), h5_teams[1].get_text(strip=True)]
+        elif len(team_links) >= 2:
+            teams = [team_links[0].get_text(strip=True), team_links[1].get_text(strip=True)]
+        
+        if len(teams) < 2:
+            continue
+        
         score_link = item.find('a', href=lambda h: h and '/rencontre/' in h)
         text_lines = [t.strip() for t in item.stripped_strings if t.strip()]
         date_text = text_lines[0] if text_lines else ''
-
-        if len(h5_teams) >= 2:
-            home = h5_teams[0].get_text(strip=True)
-            away = h5_teams[1].get_text(strip=True)
-            if score_link:
-                score = score_link.get_text(strip=True)
-                results.append({
-                    "date": date_text, "home": home,
-                    "score": score, "away": away
-                })
-            else:
-                fixtures.append({
-                    "date": date_text, "home": home, "away": away
-                })
+        
+        if score_link:
+            score = score_link.get_text(strip=True)
+            results.append({
+                "date": date_text, "home": teams[0],
+                "score": score, "away": teams[1]
+            })
+        else:
+            fixtures.append({
+                "date": date_text, "home": teams[0], "away": teams[1]
+            })
 
     if results:
         db.collection('leagues').document(results_doc).set({"matches": results})
@@ -102,37 +111,9 @@ def scrape_live():
         print(f"Failed live ({r.status_code})")
         return
     soup = BeautifulSoup(r.content, 'html.parser')
-    sections = []
-    current_section = None
-    for el in soup.find_all(['h1', 'h2', 'h3', 'div', 'section', 'article']):
-        if el.name in ('h1', 'h2'):
-            if current_section and current_section.get('matches'):
-                sections.append(current_section)
-            current_section = {"competition": el.get_text(strip=True), "matches": []}
-
-    # Simpler approach: get all text blocks split by competition
-    text = soup.get_text('\n', strip=True)
-    lines = [l for l in text.split('\n') if l.strip()]
-
-    competitions = []
-    current = None
-    matches_buffer = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Competition headers usually contain ":" and key words
-        if any(x in line for x in ['Ligue', 'Coupe', 'Championnat', 'journée', 'Premier', 'Liga', 'Serie', 'Bundesliga', 'Finale', 'Demi']) and len(line) < 100 and ':' in line:
-            if current:
-                competitions.append(current)
-            current = {"competition": line, "matches": []}
-        i += 1
-
-    # Direct extraction from live data structure
     live_data = []
-    # Each match in live page has team, score, team pattern
     for h1 in soup.find_all(['h1', 'h2']):
         comp_name = h1.get_text(strip=True)
-        # Find next siblings until next h1/h2
         matches = []
         for sibling in h1.find_next_siblings():
             if sibling.name in ('h1', 'h2'):
@@ -142,7 +123,6 @@ def scrape_live():
                 matches.append(sib_text[:300])
         if matches:
             live_data.append({"competition": comp_name, "raw": matches[:20]})
-
     if live_data:
         db.collection('leagues').document('live_scores').set({"sections": live_data})
         print(f"Saved {len(live_data)} live sections")
