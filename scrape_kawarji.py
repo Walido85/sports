@@ -6,7 +6,7 @@ from google.cloud import firestore
 import os
 import json
 
-# --- 1. CONNECT TO FIRESTORE ---
+# --- 1. FIRESTORE CONNECTION ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 cred_dict = json.loads(firebase_secret)
 db = firestore.Client.from_service_account_info(
@@ -15,55 +15,64 @@ db = firestore.Client.from_service_account_info(
     database='walid'
 )
 
-# --- 2. FETCH KAWARJI ---
-url = 'https://www.kawarji.com/'
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-response = requests.get(url, headers=headers)
-soup = BeautifulSoup(response.content, 'html.parser')
+# --- 2. TARGETING CONFIGURATION ---
+URL = 'https://www.kawarji.com/'
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-# --- 3. SCRAPE LOGIC ---
-def scrape_data():
-    # --- STANDINGS ---
-    standings = []
-    # Find the table that contains team rankings
-    rank_table = soup.find('table', class_='table')
-    if rank_table:
-        for row in rank_table.find_all('tr')[1:]:
-            cols = row.find_all('td')
-            if len(cols) >= 4:
-                standings.append({
-                    "pos": cols[0].get_text(strip=True),
-                    "team": cols[1].get_text(strip=True),
-                    "played": cols[2].get_text(strip=True),
-                    "pts": cols[3].get_text(strip=True)
-                })
+def scrape_kawarji():
+    response = requests.get(URL, headers=HEADERS)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    league_data = []
+    match_data = []
 
-    # --- RESULTS & FIXTURES ---
-    matches = []
-    # Target specific match containers
-    for match in soup.find_all('div', class_='text-center'):
-        content = match.get_text(" ", strip=True)
-        # Filter: Must have a dash (score) or 'vs' (fixture) and no long news text
-        if (" - " in content or " vs " in content) and len(content) < 100:
-            matches.append({"match_info": content})
-            
-    return standings, matches
+    # --- 3. PARSE STANDINGS (CLASSEMENT) ---
+    # Senior fix: Locate table by headers specifically
+    tables = soup.find_all('table')
+    for table in tables:
+        header_text = table.get_text().lower()
+        if 'pts' in header_text and 'j.' in header_text:
+            rows = table.find_all('tr')
+            for row in rows[1:]:  # Skip headers
+                cols = row.find_all('td')
+                if len(cols) >= 4:
+                    league_data.append({
+                        "rank": cols[0].get_text(strip=True).replace('.', ''),
+                        "team": cols[1].get_text(strip=True),
+                        "played": cols[2].get_text(strip=True),
+                        "points": cols[3].get_text(strip=True)
+                    })
+            break # Found the main table
 
-# --- 4. EXECUTE & UPDATE ---
-league_table, all_matches = scrape_data()
+    # --- 4. PARSE RESULTS & FIXTURES ---
+    # Senior fix: Kawarji lists results in 'li' elements under specific headers
+    # We look for containers that have score patterns (Number : Number) or (Time)
+    items = soup.find_all(['li', 'div', 'td'])
+    for item in items:
+        text = item.get_text(" ", strip=True)
+        # Regex-like check for "Team A 1 - 0 Team B" or "Team A vs Team B"
+        # Must be short to avoid news headlines
+        if (("-" in text or ":" in text or "vs" in text) and len(text) < 80):
+            # Extra filter to ensure it's a match, not a date or news
+            if any(char.isdigit() for char in text) and len(text) > 10:
+                match_data.append({"match": text})
 
-# Update Standings Document
-if league_table:
+    return league_data, match_data
+
+# --- 5. ATOMIC DB WRITE ---
+standings, matches = scrape_kawarji()
+
+if standings:
     db.collection('leagues').document('tunisia_ligue_1').set({
-        "data": league_table,
-        "last_sync": firestore.SERVER_TIMESTAMP
+        "table": standings,
+        "updated": firestore.SERVER_TIMESTAMP
     })
 
-# Update Results/Fixtures Document
-if all_matches:
+if matches:
+    # We use a unique document for fixtures to keep the collection clean
     db.collection('leagues').document('fixtures_results').set({
-        "data": all_matches,
-        "last_sync": firestore.SERVER_TIMESTAMP
+        "matches": matches,
+        "updated": firestore.SERVER_TIMESTAMP
     })
 
-print("Sync Complete. No downtime occurred.")
+print(f"Sync Complete. {len(standings)} teams and {len(matches)} matches updated.")
