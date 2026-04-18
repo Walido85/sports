@@ -1,5 +1,4 @@
 requests
 beautifulsoup4
-firebase-admin
 google-cloud-firestore
 firebase-admin>=6.0.0
