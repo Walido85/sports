@@ -12,14 +12,20 @@ if firebase_secret:
     cred_dict = json.loads(firebase_secret)
     cred = credentials.Certificate(cred_dict)
     
-    # We initialize without forcing a database ID to let Firebase find 'default'
+    # We use your confirmed Project ID here
+    project_id = 'tunisia-radios-d7aa8'
+    
     try:
-        firebase_admin.initialize_app(cred)
+        # This is the "Strong" initialization for mobile-created projects
+        firebase_admin.initialize_app(cred, {
+            'projectId': project_id,
+        })
     except ValueError:
         pass
         
+    # We explicitly tell the client to use the default database
     db = firestore.client()
-    print("Connected to Firebase!")
+    print(f"Targeting Project: {project_id}")
 else:
     print("Error: FIREBASE_CREDENTIALS secret not found.")
     exit(1)
@@ -32,7 +38,7 @@ response = requests.get(url, headers=headers)
 if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'html.parser')
     
-    # --- 3. SCRAPE STANDINGS ---
+    # --- 3. SMART SCRAPE STANDINGS ---
     standings = []
     table = soup.find(lambda tag: tag.name == 'table' and 'équipe' in tag.text.lower())
     
@@ -51,7 +57,7 @@ if response.status_code == 200:
             db.collection('leagues').document('standings_ligue_1').set({"table": standings})
             print("Standings saved!")
 
-    # --- 4. SCRAPE LIVE SCORES ---
+    # --- 4. SMART SCRAPE LIVE SCORES ---
     live_matches = []
     directs_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'div'] and 'Directs' in tag.text)
     
@@ -66,6 +72,6 @@ if response.status_code == 200:
         db.collection('leagues').document('live_scores').set({"matches": live_matches})
         print("Live scores saved!")
 
-    print("Success!")
+    print("Scrape process complete.")
 else:
-    print(f"Failed. Status: {response.status_code}")
+    print(f"Failed to load Kawarji. Status: {response.status_code}")
