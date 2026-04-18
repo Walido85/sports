@@ -7,20 +7,19 @@ import json
 
 # --- 1. CONNECT TO FIRESTORE ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
+
 if firebase_secret:
     cred_dict = json.loads(firebase_secret)
     cred = credentials.Certificate(cred_dict)
     
-    # Force connection to your specific Project ID
+    # We initialize without forcing a database ID to let Firebase find 'default'
     try:
-        firebase_admin.initialize_app(cred, {
-            'projectId': 'tunisia-radios-d7aa8',
-        })
+        firebase_admin.initialize_app(cred)
     except ValueError:
-        # This handles cases where the app is already initialized
         pass
         
     db = firestore.client()
+    print("Connected to Firebase!")
 else:
     print("Error: FIREBASE_CREDENTIALS secret not found.")
     exit(1)
@@ -33,9 +32,8 @@ response = requests.get(url, headers=headers)
 if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'html.parser')
     
-    # --- 3. SMART SCRAPE STANDINGS ---
+    # --- 3. SCRAPE STANDINGS ---
     standings = []
-    # Search for the standings table dynamically
     table = soup.find(lambda tag: tag.name == 'table' and 'équipe' in tag.text.lower())
     
     if table:
@@ -51,11 +49,10 @@ if response.status_code == 200:
                 })
         if standings:
             db.collection('leagues').document('standings_ligue_1').set({"table": standings})
-            print("Standings saved to Firestore!")
+            print("Standings saved!")
 
-    # --- 4. SMART SCRAPE LIVE SCORES ---
+    # --- 4. SCRAPE LIVE SCORES ---
     live_matches = []
-    # Search for the section titled "Directs"
     directs_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'div'] and 'Directs' in tag.text)
     
     if directs_header:
@@ -67,9 +64,8 @@ if response.status_code == 200:
                     
     if live_matches:
         db.collection('leagues').document('live_scores').set({"matches": live_matches})
-        print("Live scores saved to Firestore!")
+        print("Live scores saved!")
 
-    print("Success: Scrape finished.")
-
+    print("Success!")
 else:
-    print(f"Failed to load website. Status: {response.status_code}")
+    print(f"Failed. Status: {response.status_code}")
