@@ -24,12 +24,13 @@ response = requests.get(url, headers=headers)
 if response.status_code == 200:
     soup = BeautifulSoup(response.content, 'html.parser')
     
-    # --- 3. SCRAPE STANDINGS ---
+    # --- 3. SMART SCRAPE STANDINGS ---
     standings = []
-    # NOTE: You will need to replace 'REPLACE_ME_STANDINGS_CLASS' later
-    table = soup.find('table', class_='REPLACE_ME_STANDINGS_CLASS')
+    # Finds any table on the page that contains the word "équipe" (team)
+    table = soup.find(lambda tag: tag.name == 'table' and 'équipe' in tag.text.lower())
+    
     if table:
-        rows = table.find_all('tr')[1:] 
+        rows = table.find_all('tr')[1:] # Skip the header row
         for row in rows:
             cols = row.find_all('td')
             if len(cols) >= 4:
@@ -41,23 +42,25 @@ if response.status_code == 200:
                 })
         if standings:
             db.collection('sports_data').document('standings_ligue1').set({"table": standings})
-            print("Standings updated!")
+            print("Standings updated successfully!")
 
-    # --- 4. SCRAPE LIVE SCORES ---
+    # --- 4. SMART SCRAPE LIVE SCORES / DIRECTS ---
     live_matches = []
-    # NOTE: You will need to replace these classes later
-    for match in soup.find_all('div', class_='REPLACE_ME_LIVE_CLASS'): 
-        try:
-            live_matches.append({
-                "team1": match.find('span', class_='REPLACE_TEAM1_CLASS').text.strip(),
-                "team2": match.find('span', class_='REPLACE_TEAM2_CLASS').text.strip(),
-                "score": match.find('span', class_='REPLACE_SCORE_CLASS').text.strip()
-            })
-        except AttributeError:
-            continue
+    # Finds the header that says "Directs" and looks for the data right after it
+    directs_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'div'] and 'Directs' in tag.text)
+    
+    if directs_header:
+        # Grabs the container right after the Directs header
+        matches_container = directs_header.find_next('div')
+        if matches_container:
+            # Looks for individual match text blocks (e.g., "Terminé MS 0 EMM 0")
+            for match_text in matches_container.stripped_strings:
+                if len(match_text) > 5: # basic filter to catch match lines
+                    live_matches.append({"match_info": match_text})
+                    
     if live_matches:
         db.collection('sports_data').document('live_scores').set({"matches": live_matches})
-        print("Live scores updated!")
+        print("Live scores updated successfully!")
 
     print("Scrape run finished.")
 
