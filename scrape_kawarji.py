@@ -4,7 +4,6 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 import os
 import json
-import re
 
 # --- CONNECT ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
@@ -30,23 +29,24 @@ def scrape_results(url, doc_name):
         return
     soup = BeautifulSoup(r.content, 'html.parser')
     matches = []
-    for item in soup.find_all('div', class_='match-item'):
-        home = item.find('div', class_=lambda c: c and 'home' in c)
-        away = item.find('div', class_=lambda c: c and 'away' in c)
-        score = item.find('div', class_=lambda c: c and 'score' in c)
-        date_div = item.find('div', class_=lambda c: c and 'date' in c)
-
-        home_text = home.get_text(strip=True) if home else ''
-        away_text = away.get_text(strip=True) if away else ''
-        score_text = score.get_text(strip=True) if score else '-'
-        date_text = date_div.get_text(strip=True) if date_div else ''
-
-        if home_text and away_text:
+    for item in soup.find_all(class_='match-item'):
+        # Score is in <a href="/rencontre/...">
+        score_link = item.find('a', href=lambda h: h and '/rencontre/' in h)
+        # Teams are in <a href="/equipe/...">
+        team_links = item.find_all('a', href=lambda h: h and '/equipe/' in h)
+        # Date is plain text in the item
+        text_lines = [t.strip() for t in item.stripped_strings]
+        date_text = text_lines[0] if text_lines else ''
+        
+        if len(team_links) >= 2:
+            home = team_links[0].get_text(strip=True)
+            away = team_links[1].get_text(strip=True)
+            score = score_link.get_text(strip=True) if score_link else '-'
             matches.append({
                 "date": date_text,
-                "home": home_text,
-                "score": score_text,
-                "away": away_text
+                "home": home,
+                "score": score,
+                "away": away
             })
     if matches:
         db.collection('leagues').document(doc_name).set({"matches": matches})
