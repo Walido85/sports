@@ -10,17 +10,20 @@ firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 
 if firebase_secret:
     cred_dict = json.loads(firebase_secret)
-    print(f"Project ID from secret: {cred_dict.get('project_id')}")
-    print(f"Client email from secret: {cred_dict.get('client_email')}")
     cred = credentials.Certificate(cred_dict)
     
+    # Initialize the app with your project ID
     try:
-        firebase_admin.initialize_app(cred)
+        firebase_admin.initialize_app(cred, {
+            'projectId': 'tunisia-radios-d7aa8'
+        })
     except ValueError:
+        # App already initialized
         pass
         
-    db = firestore.client()
-    print("Connected to Firestore successfully.")
+    # TARGETING YOUR NEW DATABASE: 'walid'
+    db = firestore.client(database='walid')
+    print("Connected to database 'walid' successfully.")
 else:
     print("Error: FIREBASE_CREDENTIALS secret not found.")
     exit(1)
@@ -35,6 +38,7 @@ if response.status_code == 200:
     
     # --- 3. SMART SCRAPE STANDINGS ---
     standings = []
+    # Dynamic search for the standings table
     table = soup.find(lambda tag: tag.name == 'table' and 'équipe' in tag.text.lower())
     
     if table:
@@ -50,10 +54,11 @@ if response.status_code == 200:
                 })
         if standings:
             db.collection('leagues').document('standings_ligue_1').set({"table": standings})
-            print("Standings saved!")
+            print("Standings saved to 'walid' database!")
 
     # --- 4. SMART SCRAPE LIVE SCORES ---
     live_matches = []
+    # Dynamic search for "Directs" section
     directs_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'div'] and 'Directs' in tag.text)
     
     if directs_header:
@@ -65,8 +70,8 @@ if response.status_code == 200:
                     
     if live_matches:
         db.collection('leagues').document('live_scores').set({"matches": live_matches})
-        print("Live scores saved!")
+        print("Live scores saved to 'walid' database!")
 
     print("Scrape process complete.")
 else:
-    print(f"Failed. Status: {response.status_code}")
+    print(f"Failed to load Kawarji. Status: {response.status_code}")
