@@ -10,18 +10,15 @@ firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 
 if firebase_secret:
     cred_dict = json.loads(firebase_secret)
+    print(f"Project ID from secret: {cred_dict.get('project_id')}")
+    print(f"Client email from secret: {cred_dict.get('client_email')}")
     cred = credentials.Certificate(cred_dict)
     
-    # Initialize the app. For the (default) database, we just need the project ID.
     try:
-        firebase_admin.initialize_app(cred, {
-            'projectId': 'tunisia-radios-d7aa8'
-        })
+        firebase_admin.initialize_app(cred)
     except ValueError:
         pass
         
-    # In Firebase Admin SDK, to use the default database, you call it without arguments.
-    # It will automatically use the (default) database in your project.
     db = firestore.client()
     print("Connected to Firestore successfully.")
 else:
