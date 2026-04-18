@@ -6,80 +6,92 @@ import os
 import json
 from datetime import datetime
 
-# --- 1. INITIALIZE FIREBASE ---
-# Using the same logic as your Node.js cert(serviceAccount)
+# --- 1. FIREBASE CONFIGURATION ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
-    print("Error: FIREBASE_CREDENTIALS not found.")
+    print("Error: FIREBASE_CREDENTIALS secret missing.")
     exit(1)
 
 cred_dict = json.loads(firebase_secret)
 cred = credentials.Certificate(cred_dict)
 
 if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred, {
-        'projectId': 'tunisia-radios-d7aa8'
-    })
+    firebase_admin.initialize_app(cred, {'projectId': 'tunisia-radios-d7aa8'})
 
 # Targeting your 'walid' database
 db = firestore.client(database_id='walid')
 
-async def run_scraper():
+def scrape_kawarji():
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    # --- PART A: CLASSEMENT (STANDINGS) ---
+    standings_url = "https://www.kawarji.com/classement/premier-league/2025-2026"
+    standings = []
+    
     try:
-        print("Starting scrape...")
+        res_s = requests.get(standings_url, headers=headers, timeout=20)
+        soup_s = BeautifulSoup(res_s.content, 'html.parser')
         
-        # Using the Ligue 1 URL from your previous message
-        url = "https://www.kawarji.com/resultats/ligue1/2025-2026/25"
-        
-        # Using the same headers logic as your axios call
-        headers = { "User-Agent": "Mozilla/5.0" }
-        response = requests.get(url, headers=headers, timeout=20)
-        
-        # Cheerio equivalent in Python is BeautifulSoup
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        standings = []
-        
-        # --- MATCHING YOUR LOGIC EXACTLY ---
-        # $('table.table-classement tr').each...
-        # Note: If Kawarji uses a different class on the results page, 
-        # we target 'table' directly to be safe, just like your loop.
-        table = soup.find('table', class_='table-classement') or soup.find('table')
-        
+        # Exact selector from your Node.js script and .mht analysis
+        table = soup_s.find('table', class_='table-classement')
         if table:
-            rows = table.find_all('tr')
-            for i, el in enumerate(rows):
-                if i == 0: continue  # Skip header row
-                
-                cols = el.find_all('td')
+            for i, row in enumerate(table.find_all('tr')):
+                if i == 0: continue # Skip header
+                cols = row.find_all('td')
                 if len(cols) >= 6:
                     standings.append({
                         "rank": cols[0].get_text(strip=True),
                         "team": cols[1].get_text(strip=True),
                         "played": cols[2].get_text(strip=True),
-                        "gd": cols[4].get_text(strip=True), # nth-child(5)
-                        "points": cols[5].get_text(strip=True) # nth-child(6)
+                        "gd": cols[4].get_text(strip=True),
+                        "pts": cols[5].get_text(strip=True)
                     })
-
-        # --- PREPARE DATA ---
-        data_to_save = {
-            "lastUpdated": datetime.utcnow().isoformat(),
-            "standings": standings,
-            "matches": [] # Keeping your structure
-        }
-
-        # --- WRITE TO FIRESTORE ---
-        print("Writing to Firestore...")
-        # Saving to the same collection structure you used
-        db.collection('sports_data').document('ligue-1').set(data_to_save)
-
-        print(f"Scrape and write completed successfully! Saved {len(standings)} teams.")
-
+        print(f"Scraped {len(standings)} standing entries.")
     except Exception as e:
-        print(f"Error during scraping: {e}")
-        exit(1)
+        print(f"Standings Error: {e}")
 
-# Execute
-import asyncio
-if __name__ == "__main__":
-    asyncio.run(run_scraper())
+    # --- PART B: RESULTATS (MATCHES) ---
+    # Based on the J25 URL you focus on
+    results_url = "https://www.kawarji.com/resultats/ligue1/2025-2026/25"
+    matches = []
+    
+    try:
+        res_m = requests.get(results_url, headers=headers, timeout=20)
+        soup_m = BeautifulSoup(res_m.content, 'html.parser')
+        
+        # Pattern from .mht: Matches are in 'row mb-2' blocks
+        match_rows = soup_m.find_all('div', class_='row mb-2')
+        for row in match_rows:
+            teams = row.find_all('div', class_='col-4')
+            score_box = row.find('div', class_='col-2')
+            
+            if len(teams) >= 2 and score_box:
+                home = teams[0].get_text(strip=True)
+                away = teams[1].get_text(strip=True)
+                score = score_box.get_text(strip=True)
+                if home and away:
+                    matches.append({"home": home, "away": away, "score": score})
+        print(f"Scraped {len(matches)} match results.")
+    except Exception as e:
+        print(f"Results Error: {e}")
+
+    return standings, matches
+
+# --- 3. DATABASE SYNC ---
+s_data, m_data = scrape_kawarji()
+
+# Save Standings
+if s_data:
+    db.collection('sports_data').document('ligue-1-standings').set({
+        "lastUpdated": datetime.utcnow().isoformat(),
+        "standings": s_data
+    })
+
+# Save Results
+if m_data:
+    db.collection('sports_data').document('ligue-1-results').set({
+        "lastUpdated": datetime.utcnow().isoformat(),
+        "matches": m_data
+    })
+
+print("Process finished.")
