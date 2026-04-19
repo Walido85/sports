@@ -2,8 +2,8 @@ name: Kawarji Scraper (Sports + Finance)
 
 on:
   schedule:
-    - cron: '0 */1 * * *'     # Runs every hour (you can change later if you want)
-  workflow_dispatch:          # You can also run it manually from GitHub
+    - cron: '0 */1 * * *'     # Every hour
+  workflow_dispatch:          # Manual run
 
 jobs:
   scrape-data:
