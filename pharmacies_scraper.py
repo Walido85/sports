@@ -25,7 +25,9 @@ def scrape_pharmacies():
     print("Scraping all Tunisian pharmacies from official DPM site...")
     
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    r = requests.get(url, headers=headers, timeout=20)
+    
+    # verify=False to bypass SSL certificate error
+    r = requests.get(url, headers=headers, timeout=20, verify=False)
     if r.status_code != 200:
         print(f"Failed to load page ({r.status_code})")
         return
@@ -33,26 +35,33 @@ def scrape_pharmacies():
     soup = BeautifulSoup(r.content, 'html.parser')
     pharmacies = []
 
-    # The page uses a table or list of pharmacies
+    # Look for the main pharmacy table
     table = soup.find('table')
     if table:
         for row in table.find_all('tr')[1:]:   # skip header
             cells = row.find_all('td')
-            if len(cells) >= 4:
+            if len(cells) >= 5:
                 pharmacies.append({
                     "name": cells[0].get_text(strip=True),
-                    "type": cells[1].get_text(strip=True) if len(cells) > 1 else "",   # Officine, Hospitalière, Nuit, etc.
-                    "address": cells[2].get_text(strip=True) if len(cells) > 2 else "",
-                    "phone": cells[3].get_text(strip=True) if len(cells) > 3 else "",
-                    "governorate": cells[4].get_text(strip=True) if len(cells) > 4 else "",
-                    "city": cells[5].get_text(strip=True) if len(cells) > 5 else "",
+                    "type": cells[1].get_text(strip=True),      # Officine, Garde (night), etc.
+                    "governorate": cells[2].get_text(strip=True),
+                    "city": cells[3].get_text(strip=True),
+                    "address": cells[4].get_text(strip=True),
+                    "phone": cells[5].get_text(strip=True) if len(cells) > 5 else "",
                 })
     else:
-        # Fallback: look for divs with pharmacy info
-        for item in soup.find_all('div', class_=lambda x: x and 'pharmacy' in x.lower()):
-            name = item.find('h3') or item.find('h4') or item.find('strong')
+        # Fallback for div-based layout
+        for item in soup.find_all(['div', 'li'], class_=lambda x: x and ('pharmacie' in str(x).lower() or 'officine' in str(x).lower())):
+            name = item.find(['h3', 'h4', 'strong'])
             name = name.get_text(strip=True) if name else "Unknown"
-            pharmacies.append({"name": name, "type": "Officine", "address": "", "phone": ""})
+            pharmacies.append({
+                "name": name,
+                "type": "Officine / Garde",
+                "governorate": "",
+                "city": "",
+                "address": "",
+                "phone": ""
+            })
 
     if pharmacies:
         db.collection('pharmacies').document('all_pharmacies').set({
@@ -60,12 +69,12 @@ def scrape_pharmacies():
             "total": len(pharmacies),
             "source": "dpm.tn",
             "last_updated": "now",
-            "types_included": "all (Officine, Hospitalière, Nuit, etc.)"
+            "note": "Includes morning + night (garde) pharmacies, divided by governorate/city"
         })
-        print(f"✅ Saved {len(pharmacies)} Tunisian pharmacies (all types)")
+        print(f"✅ Saved {len(pharmacies)} Tunisian pharmacies (all types: morning + night)")
     else:
-        print("⚠️ No pharmacies found on the page (may require JS or filters)")
+        print("⚠️ No pharmacies found (page may be dynamic)")
 
 print("🚀 Starting Pharmacies Scraper...")
 scrape_pharmacies()
-print("🎉 Pharmacies scraper finished! Data saved in 'pharmacies' collection")
+print("🎉 Pharmacies scraper finished!")
