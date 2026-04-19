@@ -5,7 +5,7 @@ from google.oauth2 import service_account
 import os
 import json
 
-# --- CONNECT ---
+# --- CONNECT TO FIRESTORE ---
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
     print("No credentials.")
@@ -105,9 +105,10 @@ def scrape_live():
     else:
         print("No live data")
 
-# --- RUN ---
+# --- RUN SPORTS SCRAPING ---
 print("🚀 Starting Sports Scraper...")
 
+# Tunisia Leagues
 scrape_matches('https://www.kawarji.com/resultats/ligue1/2025-2026', 'results_ligue1_tunisia', 'fixtures_ligue1_tunisia')
 scrape_standings('https://www.kawarji.com/classement/ligue1/2025-2026', 'standings_ligue1_tunisia')
 
@@ -117,8 +118,14 @@ scrape_standings('https://www.kawarji.com/classement/ligue2GrA/2025-2026', 'stan
 scrape_matches('https://www.kawarji.com/resultats/ligue2GrB/2025-2026', 'results_ligue2_groupeB', 'fixtures_ligue2_groupeB')
 scrape_standings('https://www.kawarji.com/classement/ligue2GrB/2025-2026', 'standings_ligue2_groupeB')
 
+# Major European Leagues
 scrape_matches('https://www.kawarji.com/resultats/premier-league/2025-2026', 'results_premier_league', 'fixtures_premier_league')
 scrape_standings('https://www.kawarji.com/classement/premier-league/2025-2026', 'standings_premier_league')
 
 scrape_matches('https://www.kawarji.com/resultats/laliga/2025-2026', 'results_la_liga', 'fixtures_la_liga')
-scrape_standings
+scrape_standings('https://www.kawarji.com/classement/laliga/2025-2026', 'standings_la_liga')
+
+# Live scores from live.kawarji.com
+scrape_live()
+
+print("🎉 Sports scraper finished!")
