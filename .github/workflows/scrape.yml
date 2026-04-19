@@ -37,6 +37,6 @@ jobs:
         run: python weather_scraper.py
         
         - name: Run Pharmacies Scraper
-  env:
+        env:
     FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
   run: python pharmacies_scraper.py
