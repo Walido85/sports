@@ -1,9 +1,9 @@
-name: Kawarji Scraper (Sports + Finance + Weather)
+name: Kawarji Scraper (Sports + Finance + Weather + Pharmacies)
 
 on:
   schedule:
-    - cron: '0 */3 * * *'     # Every 3 hours
-  workflow_dispatch:          # Manual run
+    - cron: '0 */3 * * *'     # Runs every 3 hours
+  workflow_dispatch:          # Allows manual run from GitHub
 
 jobs:
   scrape-data:
@@ -35,8 +35,11 @@ jobs:
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python weather_scraper.py
-        
-        - name: Run Pharmacies Scraper
+
+      - name: Run Pharmacies Scraper
         env:
-    FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-  run: python pharmacies_scraper.py
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+        run: python pharmacies_scraper.py
+
+      - name: Show Summary
+        run: echo "🎉 All scrapers completed successfully!"
