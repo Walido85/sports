@@ -5,7 +5,7 @@ from google.oauth2 import service_account
 import os
 import json
 
-# --- SAME FIRESTORE CONFIG AS YOUR SPORTS SCRAPER ---
+# === SAME FIRESTORE CONFIG ===
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
     print("No credentials.")
@@ -20,13 +20,17 @@ db = firestore.Client(
 )
 print("✅ Connected to Firestore (walid database)")
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+}
 
 def scrape_tunisia_stocks():
     url = 'https://www.ilboursa.com/marches/aaz'
-    r = requests.get(url, headers=headers)
+    r = requests.get(url, headers=headers, timeout=15)
     if r.status_code != 200:
-        print(f"⚠️ ilboursa blocked ({r.status_code}) - we'll fix later if needed")
+        print(f"⚠️ ilboursa blocked ({r.status_code})")
         return
     
     soup = BeautifulSoup(r.content, 'html.parser')
@@ -35,15 +39,15 @@ def scrape_tunisia_stocks():
     if table:
         for row in table.find_all('tr')[1:]:
             cells = row.find_all('td')
-            if len(cells) >= 7:
+            if len(cells) >= 8:
                 stocks.append({
                     "name": cells[0].get_text(strip=True),
-                    "last": cells[1].get_text(strip=True),
+                    "last": cells[6].get_text(strip=True),
                     "high": cells[2].get_text(strip=True),
                     "low": cells[3].get_text(strip=True),
                     "volume_shares": cells[4].get_text(strip=True),
                     "volume_value": cells[5].get_text(strip=True),
-                    "change_pct": cells[6].get_text(strip=True),
+                    "change_pct": cells[7].get_text(strip=True),
                 })
     
     if stocks:
@@ -52,49 +56,46 @@ def scrape_tunisia_stocks():
             "source": "ilboursa.com",
             "last_updated": "now"
         })
-        print(f"✅ Saved {len(stocks)} BVMT stocks from ilboursa")
+        print(f"✅ Saved {len(stocks)} fresh BVMT stocks from ilboursa")
     else:
-        print("⚠️ No stock table found (we'll switch site if needed)")
+        print("⚠️ No stock table found")
 
-def scrape_exchange_rates():
-    url = 'https://www.bct.gov.tn/bct/siteprod/index.jsp?la=AN'
-    r = requests.get(url, headers=headers)
+def scrape_tunisia_exchange_rates():
+    # Using dinartunisien.com instead of BCT
+    url = 'https://www.dinartunisien.com/en'
+    r = requests.get(url, headers=headers, timeout=15)
     if r.status_code != 200:
-        print(f"Failed BCT: {r.status_code}")
+        print(f"Failed dinartunisien ({r.status_code})")
         return
+    
     soup = BeautifulSoup(r.content, 'html.parser')
     rates = []
-    key_rates = {}
+    # Look for currency rows (EUR, USD, etc.)
+    for row in soup.find_all('tr'):
+        cells = row.find_all('td')
+        if len(cells) >= 2:
+            currency_text = cells[0].get_text(strip=True).upper()
+            if any(c in currency_text for c in ['EUR', 'USD', 'GBP', 'CAD']):
+                value = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                rates.append({"currency": currency_text, "value": value})
     
-    text = soup.get_text()
-    if "Daily Average Exchange Rate" in text:
-        lines = [line.strip() for line in text.splitlines() if any(c in line for c in ['CAD:', 'USD:', 'EUR:', 'GBP:'])]
-        for line in lines:
-            if ':' in line:
-                currency, value = line.split(':', 1)
-                rates.append({"currency": currency.strip(), "value": value.strip()})
-    
-    # Key rates
-    if "Money market rate" in text:
-        key_rates["money_market_rate"] = "6.99%"   # latest from site
-    if "Key interest rate" in text:
-        key_rates["key_interest_rate"] = "7.00%"
-    
-    if rates or key_rates:
+    if rates:
         db.collection('finance').document('exchange_rates').set({
             "tnd_rates": rates,
-            "key_rates": key_rates,
+            "source": "dinartunisien.com",
             "date": "latest"
         })
-        print(f"✅ Saved {len(rates)} TND rates + key rates (official BCT)")
+        print(f"✅ Saved {len(rates)} Tunisia exchange rates")
+        for r in rates:
+            print(f"   {r['currency']}: {r['value']}")
     else:
-        print("No exchange rates found")
+        print("⚠️ No exchange rates found on dinartunisien")
 
 def scrape_international_indices():
     url = 'https://www.investing.com/indices/major-indices'
-    r = requests.get(url, headers=headers)
+    r = requests.get(url, headers=headers, timeout=15)
     if r.status_code != 200:
-        print(f"Failed indices: {r.status_code}")
+        print(f"⚠️ investing.com blocked ({r.status_code})")
         return
     soup = BeautifulSoup(r.content, 'html.parser')
     indices = []
@@ -116,9 +117,8 @@ def scrape_international_indices():
     else:
         print("No indices found")
 
-# --- RUN ALL ---
-print("🚀 Starting finance scraper test...")
+print("🚀 Starting finance scraper (no BCT)...")
 scrape_tunisia_stocks()
-scrape_exchange_rates()
+scrape_tunisia_exchange_rates()
 scrape_international_indices()
-print("🎉 Test finished! Check your Firestore 'finance' collection.")
+print("🎉 Finance scraper finished!")
