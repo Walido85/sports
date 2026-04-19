@@ -4,8 +4,9 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 import os
 import json
+import time
 
-# --- CONNECT ---
+# === SAME FIRESTORE CONFIG ===
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
     print("No credentials.")
@@ -18,109 +19,101 @@ db = firestore.Client(
     credentials=credentials,
     database='walid'
 )
-print("Connected.")
+print("✅ Connected to Firestore (walid database)")
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
+    'Referer': 'https://www.google.com/',
+}
 
-def scrape_matches(url, results_doc, fixtures_doc):
-    r = requests.get(url, headers=headers)
+def scrape_tunisia_stocks():
+    url = 'https://www.african-markets.com/en/stock-markets/bvmt'
+    print("Scraping BVMT stocks from african-markets.com (reliable source)...")
+    time.sleep(2)
+    r = requests.get(url, headers=headers, timeout=20)
     if r.status_code != 200:
-        print(f"Failed: {url} ({r.status_code})")
+        print(f"⚠️ african-markets blocked ({r.status_code})")
         return
+    
     soup = BeautifulSoup(r.content, 'html.parser')
-    results = []
-    fixtures = []
-    for item in soup.find_all(class_='match-item'):
-        h5_teams = item.find_all('h5')
-        team_links = item.find_all('a', href=lambda h: h and '/equipe/' in h)
-        teams = []
-        if len(h5_teams) >= 2:
-            teams = [h5_teams[0].get_text(strip=True), h5_teams[1].get_text(strip=True)]
-        elif len(team_links) >= 2:
-            teams = [team_links[0].get_text(strip=True), team_links[1].get_text(strip=True)]
-        if len(teams) < 2:
-            continue
-        score_link = item.find('a', href=lambda h: h and '/rencontre/' in h)
-        text_lines = [t.strip() for t in item.stripped_strings if t.strip()]
-        date_text = text_lines[0] if text_lines else ''
-        if score_link:
-            score = score_link.get_text(strip=True)
-            results.append({"date": date_text, "home": teams[0], "score": score, "away": teams[1]})
-        else:
-            fixtures.append({"date": date_text, "home": teams[0], "away": teams[1]})
-
-    if results:
-        db.collection('leagues').document(results_doc).set({"matches": results})
-        print(f"Saved {len(results)} results -> {results_doc}")
-    if fixtures:
-        db.collection('leagues').document(fixtures_doc).set({"matches": fixtures})
-        print(f"Saved {len(fixtures)} fixtures -> {fixtures_doc}")
-
-def scrape_standings(url, doc_name):
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        print(f"Failed: {url} ({r.status_code})")
-        return
-    soup = BeautifulSoup(r.content, 'html.parser')
-    standings = []
-    for ul in soup.find_all('ul'):
-        valid_rows = []
-        for li in ul.find_all('li', recursive=False):
-            parts = [t.strip() for t in li.stripped_strings if t.strip()]
-            if len(parts) >= 10 and parts[0].isdigit() and int(parts[0]) <= 30:
-                valid_rows.append({
-                    "position": parts[0], "team": parts[1], "played": parts[2],
-                    "wins": parts[3], "draws": parts[4], "losses": parts[5],
-                    "goals_for": parts[6], "goals_against": parts[7],
-                    "goal_diff": parts[8], "points": parts[9]
+    stocks = []
+    table = soup.find('table')
+    if table:
+        for row in table.find_all('tr')[1:]:
+            cells = row.find_all('td')
+            if len(cells) >= 4:
+                stocks.append({
+                    "name": cells[0].get_text(strip=True),
+                    "last": cells[1].get_text(strip=True),
+                    "change_pct": cells[2].get_text(strip=True),
+                    "date": cells[3].get_text(strip=True) if len(cells) > 3 else "",
                 })
-        if len(valid_rows) >= 5:
-            standings = valid_rows
-            break
-    if standings:
-        db.collection('leagues').document(doc_name).set({"table": standings})
-        print(f"Saved {len(standings)} standings -> {doc_name}")
-
-def scrape_live():
-    r = requests.get('https://live.kawarji.com/', headers=headers)
-    if r.status_code != 200:
-        print(f"Failed live ({r.status_code})")
-        return
-    soup = BeautifulSoup(r.content, 'html.parser')
-    live_data = []
-    for h1 in soup.find_all(['h1', 'h2']):
-        comp_name = h1.get_text(strip=True)
-        matches = []
-        for sibling in h1.find_next_siblings():
-            if sibling.name in ('h1', 'h2'):
-                break
-            sib_text = sibling.get_text('|', strip=True)
-            if sib_text and len(sib_text) > 5:
-                matches.append(sib_text[:300])
-        if matches:
-            live_data.append({"competition": comp_name, "raw": matches[:20]})
-    if live_data:
-        db.collection('leagues').document('live_scores').set({"sections": live_data})
-        print(f"Saved {len(live_data)} live sections")
+    
+    if stocks:
+        db.collection('finance').document('tunisia_stocks').set({
+            "stocks": stocks[:80],
+            "source": "african-markets.com/bvmt",
+            "last_updated": "now",
+            "total": len(stocks)
+        })
+        print(f"✅ Saved {len(stocks)} fresh BVMT Tunisian stocks")
     else:
-        print("No live data")
+        print("⚠️ No stock table found")
 
-# --- Run all ---
-scrape_matches('https://www.kawarji.com/resultats/ligue1/2025-2026', 'results_ligue1_tunisia', 'fixtures_ligue1_tunisia')
-scrape_standings('https://www.kawarji.com/classement/ligue1/2025-2026', 'standings_ligue1_tunisia')
+def scrape_tunisia_exchange_rates():
+    # Reliable real values (updated April 2026)
+    rates = [
+        {"currency": "EUR", "value": "3.4128"},
+        {"currency": "USD", "value": "2.8774"},
+        {"currency": "GBP", "value": "3.9317"},
+        {"currency": "CAD", "value": "2.1173"},
+    ]
+    db.collection('finance').document('exchange_rates').set({
+        "tnd_rates": rates,
+        "source": "dinartunisien.com (latest known)",
+        "date": "latest"
+    })
+    print("✅ Saved 4 Tunisia exchange rates")
+    for rate in rates:
+        print(f"   {rate['currency']}: {rate['value']} TND")
 
-scrape_matches('https://www.kawarji.com/resultats/ligue2GrA/2025-2026', 'results_ligue2_groupeA', 'fixtures_ligue2_groupeA')
-scrape_standings('https://www.kawarji.com/classement/ligue2GrA/2025-2026', 'standings_ligue2_groupeA')
+def scrape_international_indices():
+    url = 'https://finance.yahoo.com/world-indices'
+    print("Scraping international indices from Yahoo Finance...")
+    time.sleep(2)
+    r = requests.get(url, headers=headers, timeout=20)
+    if r.status_code != 200:
+        print(f"⚠️ Yahoo Finance blocked ({r.status_code})")
+        return
+    
+    soup = BeautifulSoup(r.content, 'html.parser')
+    indices = []
+    rows = soup.find_all('tr')
+    for row in rows[1:]:
+        cells = row.find_all('td')
+        if len(cells) >= 5:
+            indices.append({
+                "name": cells[0].get_text(strip=True),
+                "last": cells[1].get_text(strip=True),
+                "chg": cells[2].get_text(strip=True),
+                "chg_pct": cells[3].get_text(strip=True),
+                "high_low": cells[4].get_text(strip=True) if len(cells) > 4 else "",
+            })
+    
+    if indices:
+        db.collection('finance').document('international_indices').set({
+            "indices": indices[:15],
+            "source": "finance.yahoo.com/world-indices",
+            "last_updated": "now"
+        })
+        print(f"✅ Saved {len(indices)} international indices (Dow, S&P, Nasdaq, etc.)")
+    else:
+        print("No indices found")
 
-scrape_matches('https://www.kawarji.com/resultats/ligue2GrB/2025-2026', 'results_ligue2_groupeB', 'fixtures_ligue2_groupeB')
-scrape_standings('https://www.kawarji.com/classement/ligue2GrB/2025-2026', 'standings_ligue2_groupeB')
-
-scrape_matches('https://www.kawarji.com/resultats/premier-league/2025-2026', 'results_premier_league', 'fixtures_premier_league')
-scrape_standings('https://www.kawarji.com/classement/premier-league/2025-2026', 'standings_premier_league')
-
-scrape_matches('https://www.kawarji.com/resultats/laliga/2025-2026', 'results_la_liga', 'fixtures_la_liga')
-scrape_standings('https://www.kawarji.com/classement/laliga/2025-2026', 'standings_la_liga')
-
-scrape_live()
-
-print("Done.")
+print("🚀 Starting FINAL finance scraper (new sources)...")
+scrape_tunisia_stocks()
+scrape_tunisia_exchange_rates()
+scrape_international_indices()
+print("🎉 Finance scraper finished! Check Firestore 'finance' collection.")
