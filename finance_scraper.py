@@ -5,6 +5,7 @@ from google.oauth2 import service_account
 import os
 import json
 
+# === SAME FIRESTORE CONFIG ===
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
     print("No credentials.")
@@ -17,7 +18,7 @@ db = firestore.Client(
     credentials=credentials,
     database='walid'
 )
-print("✅ Connected to Firestore")
+print("✅ Connected to Firestore (walid database)")
 
 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'}
 
@@ -39,7 +40,7 @@ def scrape_tunisia_exchange_rates():
 
 def scrape_international_indices():
     url = 'https://finance.yahoo.com/world-indices'
-    r = requests.get(url, headers=headers)
+    r = requests.get(url, headers=headers, timeout=15)
     if r.status_code != 200:
         print(f"⚠️ Yahoo blocked ({r.status_code})")
         return
