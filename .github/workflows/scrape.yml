@@ -3,7 +3,7 @@ name: Kawarji Scraper (Sports + Finance)
 on:
   schedule:
     - cron: '0 */1 * * *'     # Every hour
-  workflow_dispatch:          # Manual run
+  workflow_dispatch:
 
 jobs:
   scrape-data:
