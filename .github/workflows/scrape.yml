@@ -1,9 +1,9 @@
-name: Kawarji Scraper (Sports + Finance)
+name: Kawarji Scraper (Sports + Finance + Weather)
 
 on:
   schedule:
-    - cron: '0 */1 * * *'     # Runs every hour
-  workflow_dispatch:          # Allows manual run
+    - cron: '0 */3 * * *'     # Every 3 hours
+  workflow_dispatch:          # Manual run
 
 jobs:
   scrape-data:
@@ -30,3 +30,8 @@ jobs:
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python finance_scraper.py
+
+      - name: Run Weather Scraper
+        env:
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+        run: python weather_scraper.py
