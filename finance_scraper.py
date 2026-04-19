@@ -4,6 +4,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 import os
 import json
+import time
 
 # === SAME FIRESTORE CONFIG ===
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
@@ -20,7 +21,49 @@ db = firestore.Client(
 )
 print("✅ Connected to Firestore (walid database)")
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'}
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+}
+
+def scrape_tunisia_stocks():
+    url = 'https://www.african-markets.com/en/stock-markets/bvmt/listed-companies?hl=en-US'
+    print("Scraping BVMT stocks from african-markets.com listed companies...")
+    time.sleep(2)
+    r = requests.get(url, headers=headers, timeout=20)
+    if r.status_code != 200:
+        print(f"⚠️ Blocked ({r.status_code})")
+        return
+    
+    soup = BeautifulSoup(r.content, 'html.parser')
+    stocks = []
+    table = soup.find('table')
+    if table:
+        for row in table.find_all('tr')[1:]:
+            cells = row.find_all('td')
+            if len(cells) >= 4:
+                name = cells[0].get_text(strip=True)
+                last = cells[1].get_text(strip=True)
+                change_pct = cells[2].get_text(strip=True)
+                date = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                if name and last:
+                    stocks.append({
+                        "name": name,
+                        "last": last,
+                        "change_pct": change_pct,
+                        "date": date
+                    })
+    
+    if stocks:
+        db.collection('finance').document('tunisia_stocks').set({
+            "stocks": stocks[:80],
+            "source": "african-markets.com/listed-companies",
+            "last_updated": "now",
+            "total": len(stocks)
+        })
+        print(f"✅ Saved {len(stocks)} BVMT stocks")
+    else:
+        print("⚠️ No table found")
 
 def scrape_tunisia_exchange_rates():
     rates = [
@@ -35,8 +78,6 @@ def scrape_tunisia_exchange_rates():
         "date": "latest"
     })
     print("✅ Saved 4 Tunisia exchange rates")
-    for r in rates:
-        print(f"   {r['currency']}: {r['value']} TND")
 
 def scrape_international_indices():
     url = 'https://finance.yahoo.com/world-indices'
@@ -62,7 +103,8 @@ def scrape_international_indices():
     else:
         print("No indices found")
 
-print("🚀 Starting Finance Scraper...")
+print("🚀 Starting finance scraper with african-markets listed companies...")
+scrape_tunisia_stocks()
 scrape_tunisia_exchange_rates()
 scrape_international_indices()
 print("🎉 Finance scraper finished!")
