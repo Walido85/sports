@@ -25,48 +25,46 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.8',
-    'Referer': 'https://www.google.com/',
 }
 
 def scrape_tunisia_stocks():
-    url = 'https://www.investing.com/equities/tunisia'
-    print("Scraping BVMT stocks from investing.com (more reliable)...")
+    url = 'https://ati.attijaribourse.com.tn/AttijariBourse/marche'
+    print("Scraping BVMT stocks from Attijari Bourse...")
     time.sleep(2)
     r = requests.get(url, headers=headers, timeout=20)
     if r.status_code != 200:
-        print(f"⚠️ investing.com blocked ({r.status_code})")
+        print(f"⚠️ Attijari blocked ({r.status_code})")
         return
     
     soup = BeautifulSoup(r.content, 'html.parser')
     stocks = []
-    rows = soup.find_all('tr')
-    for row in rows[1:]:  # skip header
-        cells = row.find_all('td')
-        if len(cells) >= 8:
-            stocks.append({
-                "name": cells[1].get_text(strip=True),      # Company name
-                "last": cells[2].get_text(strip=True),
-                "high": cells[3].get_text(strip=True),
-                "low": cells[4].get_text(strip=True),
-                "chg": cells[5].get_text(strip=True),
-                "chg_pct": cells[6].get_text(strip=True),
-                "vol": cells[7].get_text(strip=True),
-                "time": cells[8].get_text(strip=True) if len(cells) > 8 else "",
-            })
+    table = soup.find('table')
+    if table:
+        for row in table.find_all('tr')[1:]:
+            cells = row.find_all('td')
+            if len(cells) >= 8:
+                name = cells[0].get_text(strip=True).split('(')[0].strip()
+                last = cells[2].get_text(strip=True) if len(cells) > 2 else ""
+                change_pct = cells[3].get_text(strip=True) if len(cells) > 3 else ""
+                if name and last:
+                    stocks.append({
+                        "name": name,
+                        "last": last,
+                        "change_pct": change_pct,
+                    })
     
     if stocks:
         db.collection('finance').document('tunisia_stocks').set({
-            "stocks": stocks[:80],
-            "source": "investing.com/equities/tunisia",
+            "stocks": stocks[:100],
+            "source": "ati.attijaribourse.com.tn",
             "last_updated": "now",
             "total": len(stocks)
         })
-        print(f"✅ Saved {len(stocks)} fresh BVMT Tunisian stocks")
+        print(f"✅ Saved {len(stocks)} BVMT stocks from Attijari Bourse")
     else:
-        print("⚠️ No stock table found")
+        print("⚠️ No table found on Attijari Bourse")
 
 def scrape_tunisia_exchange_rates():
-    # Reliable fallback with real latest rates
     rates = [
         {"currency": "EUR", "value": "3.4128"},
         {"currency": "USD", "value": "2.8774"},
@@ -75,14 +73,39 @@ def scrape_tunisia_exchange_rates():
     ]
     db.collection('finance').document('exchange_rates').set({
         "tnd_rates": rates,
-        "source": "dinartunisien.com (latest known)",
+        "source": "latest known",
         "date": "latest"
     })
     print("✅ Saved 4 Tunisia exchange rates")
-    for rate in rates:
-        print(f"   {rate['currency']}: {rate['value']} TND")
+    for r in rates:
+        print(f"   {r['currency']}: {r['value']} TND")
 
-print("🚀 Starting finance scraper (fixed version with investing.com stocks)...")
+def scrape_international_indices():
+    url = 'https://finance.yahoo.com/world-indices'
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code != 200:
+        print(f"⚠️ Yahoo blocked ({r.status_code})")
+        return
+    soup = BeautifulSoup(r.content, 'html.parser')
+    indices = []
+    rows = soup.find_all('tr')
+    for row in rows[1:]:
+        cells = row.find_all('td')
+        if len(cells) >= 5:
+            indices.append({
+                "name": cells[0].get_text(strip=True),
+                "last": cells[1].get_text(strip=True),
+                "chg": cells[2].get_text(strip=True),
+                "chg_pct": cells[3].get_text(strip=True),
+            })
+    if indices:
+        db.collection('finance').document('international_indices').set({"indices": indices[:20]})
+        print(f"✅ Saved {len(indices)} international indices")
+    else:
+        print("No indices found")
+
+print("🚀 Starting finance scraper with Attijari Bourse...")
 scrape_tunisia_stocks()
 scrape_tunisia_exchange_rates()
+scrape_international_indices()
 print("🎉 Finance scraper finished!")
