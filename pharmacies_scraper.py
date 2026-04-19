@@ -21,62 +21,60 @@ db = firestore.Client(
 print("✅ Connected to Firestore (walid database)")
 
 def scrape_pharmacies():
-    url = 'https://dpm.tn/pharmacie/liste-des-officines'
-    print("Trying to scrape pharmacies with dropdown simulation...")
+    print("Scraping ALL Tunisian pharmacies (Morning + Night/Garde)...")
 
+    # Governorates / cities (from med.tn pattern)
+    governorates = [
+        "tunis", "sfax", "sousse", "kairouan", "bizerte", "gabes", "gafsa",
+        "ariana", "ben-arous", "la-marsa", "hammamet", "monastir", "mahdia",
+        "nabeul", "kef", "jendouba", "beja", "siliana", "zaghouan", "tozeur",
+        "kebili", "medenine", "tataouine", "tabarka"
+    ]
+
+    all_pharmacies = []
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    
-    # First load the page
-    r = requests.get(url, headers=headers, timeout=20, verify=False)
-    if r.status_code != 200:
-        print(f"Failed to load page ({r.status_code})")
-        return
 
-    soup = BeautifulSoup(r.content, 'html.parser')
-    pharmacies = []
+    for gov in governorates:
+        # Scrape morning pharmacies
+        for typ in ["jour", "garde"]:
+            url = f"https://www.med.tn/pharmacie/{typ}/{gov}"
+            print(f"  → Checking {typ} pharmacies in {gov}...")
 
-    # Try to find any pharmacy list (table or divs)
-    table = soup.find('table')
-    if table:
-        print("Found table - parsing...")
-        for row in table.find_all('tr')[1:]:
-            cells = row.find_all('td')
-            if len(cells) >= 4:
-                pharmacies.append({
-                    "name": cells[0].get_text(strip=True),
-                    "type": cells[1].get_text(strip=True),   # Officine, Garde (night), etc.
-                    "governorate": cells[2].get_text(strip=True),
-                    "city": cells[3].get_text(strip=True),
-                    "address": cells[4].get_text(strip=True) if len(cells) > 4 else "",
-                    "phone": cells[5].get_text(strip=True) if len(cells) > 5 else "",
-                })
-    else:
-        print("No table found - looking for divs...")
-        # Fallback for div-based layout
-        for item in soup.find_all(['div', 'li'], class_=lambda x: x and ('pharmacie' in str(x).lower() or 'officine' in str(x).lower())):
-            name_tag = item.find(['h3', 'h4', 'strong', 'a'])
-            name = name_tag.get_text(strip=True) if name_tag else "Unknown"
-            pharmacies.append({
-                "name": name,
-                "type": "Officine / Garde",
-                "governorate": "",
-                "city": "",
-                "address": "",
-                "phone": ""
-            })
+            try:
+                r = requests.get(url, headers=headers, timeout=15, verify=False)
+                if r.status_code != 200:
+                    continue
 
-    if pharmacies:
+                soup = BeautifulSoup(r.content, 'html.parser')
+                items = soup.find_all(['div', 'li', 'tr'], class_=lambda x: x and ('pharmacie' in str(x).lower() or 'officine' in str(x).lower()))
+
+                for item in items:
+                    name_tag = item.find(['h3', 'h4', 'strong', 'a'])
+                    if name_tag:
+                        name = name_tag.get_text(strip=True)
+                        all_pharmacies.append({
+                            "name": name,
+                            "type": "Morning (Jour)" if typ == "jour" else "Night (Garde)",
+                            "governorate": gov.capitalize(),
+                            "city": gov.capitalize(),
+                            "address": "",
+                            "phone": ""
+                        })
+            except:
+                continue
+
+    if all_pharmacies:
         db.collection('pharmacies').document('all_pharmacies').set({
-            "pharmacies": pharmacies,
-            "total": len(pharmacies),
-            "source": "dpm.tn",
+            "pharmacies": all_pharmacies,
+            "total": len(all_pharmacies),
+            "source": "med.tn (jour + garde)",
             "last_updated": "now",
-            "note": "Morning + Night pharmacies (garde)"
+            "note": "All types: Morning pharmacies + Night (Garde) pharmacies, divided by governorate"
         })
-        print(f"✅ Saved {len(pharmacies)} Tunisian pharmacies")
+        print(f"✅ Saved {len(all_pharmacies)} Tunisian pharmacies (Morning + Night/Garde)")
     else:
-        print("⚠️ Still no pharmacies found. The page is heavily dynamic with dropdowns and JavaScript.")
+        print("⚠️ No pharmacies found (sites may block automated access)")
 
-print("🚀 Starting Pharmacies Scraper (dropdown attempt)...")
+print("🚀 Starting Pharmacies Scraper (Morning + Night)...")
 scrape_pharmacies()
 print("🎉 Pharmacies scraper finished!")
