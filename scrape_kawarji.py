@@ -82,4 +82,45 @@ def scrape_standings(url, doc_name):
         print(f"Saved {len(standings)} standings -> {doc_name}")
 
 def scrape_live():
-    r = requests.get('https://live
+    r = requests.get('https://live.kawarji.com/', headers=headers)
+    if r.status_code != 200:
+        print(f"Failed live ({r.status_code})")
+        return
+    soup = BeautifulSoup(r.content, 'html.parser')
+    live_data = []
+    for h1 in soup.find_all(['h1', 'h2']):
+        comp_name = h1.get_text(strip=True)
+        matches = []
+        for sibling in h1.find_next_siblings():
+            if sibling.name in ('h1', 'h2'):
+                break
+            sib_text = sibling.get_text('|', strip=True)
+            if sib_text and len(sib_text) > 5:
+                matches.append(sib_text[:300])
+        if matches:
+            live_data.append({"competition": comp_name, "raw": matches[:20]})
+    if live_data:
+        db.collection('leagues').document('live_scores').set({"sections": live_data})
+        print(f"Saved {len(live_data)} live sections")
+    else:
+        print("No live data")
+
+# --- Run all ---
+scrape_matches('https://www.kawarji.com/resultats/ligue1/2025-2026', 'results_ligue1_tunisia', 'fixtures_ligue1_tunisia')
+scrape_standings('https://www.kawarji.com/classement/ligue1/2025-2026', 'standings_ligue1_tunisia')
+
+scrape_matches('https://www.kawarji.com/resultats/ligue2GrA/2025-2026', 'results_ligue2_groupeA', 'fixtures_ligue2_groupeA')
+scrape_standings('https://www.kawarji.com/classement/ligue2GrA/2025-2026', 'standings_ligue2_groupeA')
+
+scrape_matches('https://www.kawarji.com/resultats/ligue2GrB/2025-2026', 'results_ligue2_groupeB', 'fixtures_ligue2_groupeB')
+scrape_standings('https://www.kawarji.com/classement/ligue2GrB/2025-2026', 'standings_ligue2_groupeB')
+
+scrape_matches('https://www.kawarji.com/resultats/premier-league/2025-2026', 'results_premier_league', 'fixtures_premier_league')
+scrape_standings('https://www.kawarji.com/classement/premier-league/2025-2026', 'standings_premier_league')
+
+scrape_matches('https://www.kawarji.com/resultats/laliga/2025-2026', 'results_la_liga', 'fixtures_la_liga')
+scrape_standings('https://www.kawarji.com/classement/laliga/2025-2026', 'standings_la_liga')
+
+scrape_live()
+
+print("Done.")
