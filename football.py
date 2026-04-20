@@ -133,7 +133,11 @@ def save(doc_id: str, data: dict, retention_days: int = 30) -> None:
     
     history_ref = db.collection('football').document(history_doc_id)
     doc = history_ref.get()
-    history = doc.get('history', []) if doc.exists else []
+    
+    if doc.exists:
+        history = doc.get('history') or []
+    else:
+        history = []
     
     history.append(new_entry)
     
@@ -226,27 +230,22 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
             match_id    = (await el.get_attribute("match_id") or "").strip()
             href        = (await el.get_attribute("href") or "").strip()
 
-            # TRY MULTIPLE SCORE LOCATIONS
             result_text = ""
             
-            # Method 1: div.result-wrap (standard)
             result_el = await el.query_selector("div.result-wrap")
             if result_el:
                 result_text = (await result_el.inner_text()).strip()
             
-            # Method 2: span.score (hub page format)
             if not result_text:
                 score_el = await el.query_selector("span.score, div.score, span.result")
                 if score_el:
                     result_text = (await score_el.inner_text()).strip()
             
-            # Method 3: Look in event container
             if not result_text:
                 event_el = await el.query_selector("div.event-info, div.match-info")
                 if event_el:
                     result_text = (await event_el.inner_text()).strip()
             
-            # Method 4: Direct text content from match element
             if not result_text:
                 all_text = (await el.inner_text()).strip()
                 score_match = re.search(r'(\d+)\s*-\s*(\d+)', all_text)
@@ -432,10 +431,8 @@ async def scrape_standings(page, league: dict) -> None:
     with open(f"debug/{league_name}_standings.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
-    # Get ALL rows (both group headers and team rows)
     all_rows = await page.query_selector_all("div.rank-row")
     
-    # Check if grouped by looking for group headers
     has_groups = False
     for row in all_rows:
         row_text = (await row.inner_text()).strip().lower()
@@ -444,7 +441,6 @@ async def scrape_standings(page, league: dict) -> None:
             break
     
     if has_groups:
-        # GROUPED STANDINGS
         print(f"      📊 Grouped standings detected")
         groups = []
         current_group = None
@@ -453,32 +449,26 @@ async def scrape_standings(page, league: dict) -> None:
         for row in all_rows:
             row_text = (await row.inner_text()).strip()
             
-            # Check if this is a group header
             if re.match(r'^group\s+[a-z]|^[a-z]+\s+\d+', row_text.lower()) and not await row.query_selector("div.rank-col.number"):
-                # Save previous group if exists
                 if current_group and current_teams:
                     groups.append({
                         "group": current_group,
                         "teams": current_teams,
                         "count": len(current_teams)
                     })
-                # Start new group
                 current_group = row_text.split('\n')[0] if '\n' in row_text else row_text
                 current_teams = []
                 continue
             
-            # Skip header rows
             if await row.query_selector("div.rank-col.header"):
                 continue
             
-            # Check for "players" section
             name_check = await row.query_selector("div.rank-col.name")
             if name_check:
                 check_text = (await name_check.inner_text()).strip().lower()
                 if "players" in check_text:
                     break
             
-            # Extract team data
             pos_el = await row.query_selector("div.rank-col.number")
             position = (await pos_el.inner_text()).strip() if pos_el else ""
             
@@ -520,7 +510,6 @@ async def scrape_standings(page, league: dict) -> None:
                         "points":    (await points_el.inner_text()).strip() if points_el else "",
                     })
         
-        # Save last group
         if current_group and current_teams:
             groups.append({
                 "group": current_group,
@@ -539,17 +528,14 @@ async def scrape_standings(page, league: dict) -> None:
             print(f"   ✅ {len(groups)} groups with {sum(g['count'] for g in groups)} teams")
     
     else:
-        # SINGLE TABLE
         table = []
         max_teams = 30
         
         for row in all_rows:
             try:
-                # Skip header
                 if await row.query_selector("div.rank-col.header"):
                     continue
                 
-                # Check for "players" section
                 name_check = await row.query_selector("div.rank-col.name")
                 if name_check:
                     check_text = (await name_check.inner_text()).strip().lower()
