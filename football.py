@@ -96,17 +96,14 @@ LEAGUES = [
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
-def classify_status(result_text: str, css_classes: str, element_html: str = "") -> str:
-    """Classify match status with improved live detection."""
+def classify_status(result_text: str, css_classes: str) -> str:
+    """Classify match status."""
     t = result_text.strip()
     c = css_classes.lower()
-    h = element_html.lower()
     
     if "'" in t and re.search(r"\d+\s*'", t):
         return "live"
     if "live" in c or "active-match" in c or "live-match" in c:
-        return "live"
-    if "live" in h or "active" in h:
         return "live"
     if re.search(r"half|second half|first half|minute", t.lower()):
         return "live"
@@ -130,14 +127,13 @@ def parse_time(result_text: str) -> str:
 
 
 def extract_date_from_text(text: str) -> str:
-    """Extract date from text like 'Today', 'Tomorrow', 'Mon 20 Apr' etc."""
+    """Extract date from text."""
     text = text.lower().strip()
     
-    # Match patterns like "Mon 20 Apr", "20 Apr", "20/04", "20-04-2026"
     patterns = [
-        r'(\w+\s+\d{1,2}\s+\w+)',  # "Mon 20 Apr"
-        r'(\d{1,2}\s+\w+)',  # "20 Apr"
-        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',  # "20/04/2026"
+        r'(\w+\s+\d{1,2}\s+\w+)',
+        r'(\d{1,2}\s+\w+)',
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
     ]
     
     for pattern in patterns:
@@ -153,11 +149,15 @@ def extract_date_from_text(text: str) -> str:
     return ""
 
 
-def save(doc_id: str, data: dict, retention_days: int = 30) -> None:
-    """Save current + keep only 30 days of history."""
+def save(doc_id: str, data: dict, keep_history: bool = False, retention_days: int = 30) -> None:
+    """Save current data. Keep history ONLY for results."""
     data["timestamp"] = datetime.utcnow().isoformat()
     
     db.collection('football').document(doc_id).set(data)
+    
+    # ONLY KEEP HISTORY FOR RESULTS
+    if not keep_history:
+        return
     
     timestamp = datetime.utcnow().isoformat()
     history_doc_id = f"{doc_id}_history"
@@ -188,7 +188,7 @@ def save(doc_id: str, data: dict, retention_days: int = 30) -> None:
 
 
 async def extract_live_details(el) -> dict:
-    """Extract live match details: minute, scorers, cards, possession."""
+    """Extract live match details."""
     details = {
         "minute": "",
         "scorers_home": [],
@@ -266,10 +266,8 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
             css_classes = (await el.get_attribute("class") or "")
             match_id    = (await el.get_attribute("match_id") or "").strip()
             href        = (await el.get_attribute("href") or "").strip()
-            element_html = (await el.outer_html()).strip()
             all_element_text = (await el.inner_text()).strip()
 
-            # EXTRACT DATE
             date = extract_date_from_text(all_element_text)
 
             result_text = ""
@@ -296,7 +294,7 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
                 if not result_text and re.search(r'\d+\s*[\':]', all_element_text):
                     result_text = all_element_text.split('\n')[0]
 
-            status = classify_status(result_text, css_classes, element_html)
+            status = classify_status(result_text, css_classes)
             score  = parse_score(result_text) if status in ("live", "result") else "-- - --"
 
             if status == "fixture":
@@ -383,7 +381,7 @@ async def scrape_live(page) -> None:
         save("live", {
             "matches":   all_live_matches,
             "count":     len(all_live_matches),
-        })
+        }, keep_history=False)
         print(f"   ✅ {len(all_live_matches):>3} LIVE")
     else:
         print("   ℹ️  No live matches")
@@ -414,14 +412,14 @@ async def scrape_fixtures(page, league: dict) -> None:
             "league_logo": league_logo,
             "matches":   fixtures_data,
             "count":     len(fixtures_data),
-        })
+        }, keep_history=False)
         print(f"   ✅ {len(fixtures_data):>3} FIXTURES")
     else:
         print(f"   ℹ️  No fixtures")
 
 
 # ---------------------------------------------------------------------------
-# RESULTS
+# RESULTS (WITH HISTORY)
 # ---------------------------------------------------------------------------
 async def scrape_results(page, league: dict) -> None:
     league_name = league["name"]
@@ -449,7 +447,7 @@ async def scrape_results(page, league: dict) -> None:
             "league_logo": league_logo,
             "matches":   results_data,
             "count":     len(results_data),
-        })
+        }, keep_history=True)
         print(f"   ✅ {len(results_data):>3} RESULTS")
     else:
         print(f"   ℹ️  No results")
@@ -569,7 +567,7 @@ async def scrape_standings(page, league: dict) -> None:
                 "type": "grouped",
                 "groups": groups,
                 "total_groups": len(groups),
-            })
+            }, keep_history=False)
             print(f"   ✅ {len(groups)} groups with {sum(g['count'] for g in groups)} teams")
     
     else:
@@ -645,7 +643,7 @@ async def scrape_standings(page, league: dict) -> None:
                 "type": "single",
                 "table": table,
                 "count": len(table),
-            })
+            }, keep_history=False)
             print(f"   ✅ {len(table)} teams")
         else:
             print(f"   ⚠️  No standings rows")
