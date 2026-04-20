@@ -48,6 +48,27 @@ LEAGUES = [
         "results_url": "https://www.ysscores.com/en/championship/6811/Premier-League-statics",
     },
     {
+        "key": "serie_a",
+        "name": "Serie A",
+        "url": "https://www.ysscores.com/en/championship/3734/Serie-A",
+        "standings_url": "https://www.ysscores.com/en/championship/3734/Serie-A-rank",
+        "results_url": "https://www.ysscores.com/en/championship/3734/Serie-A-statics",
+    },
+    {
+        "key": "ligue_1",
+        "name": "Ligue 1",
+        "url": "https://www.ysscores.com/en/championship/1933/Ligue-1",
+        "standings_url": "https://www.ysscores.com/en/championship/1933/Ligue-1-rank",
+        "results_url": "https://www.ysscores.com/en/championship/1933/Ligue-1-statics",
+    },
+    {
+        "key": "bundesliga",
+        "name": "Bundesliga",
+        "url": "https://www.ysscores.com/en/championship/2606/Bundesliga",
+        "standings_url": "https://www.ysscores.com/en/championship/2606/Bundesliga-rank",
+        "results_url": "https://www.ysscores.com/en/championship/2606/Bundesliga-statics",
+    },
+    {
         "key": "uefa_champions_league",
         "name": "UEFA Champions League",
         "url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League",
@@ -90,7 +111,68 @@ def save(doc_id: str, data: dict) -> None:
     db.collection('test').document(doc_id).set(data)
 
 
-async def extract_matches(elements) -> tuple:
+async def extract_live_details(el) -> dict:
+    """Extract comprehensive live match details: minute, scorers, cards, possession."""
+    details = {
+        "minute": "",
+        "scorers_home": [],
+        "scorers_away": [],
+        "cards": [],
+        "possession": {},
+        "stats": {},
+    }
+    
+    try:
+        # Try to get minute from result-wrap
+        result_el = await el.query_selector("div.result-wrap")
+        if result_el:
+            result_text = (await result_el.inner_text()).strip()
+            minute_match = re.search(r"(\d+)'", result_text)
+            if minute_match:
+                details["minute"] = f"{minute_match.group(1)}'"
+        
+        # Try to find event list (goals/cards)
+        event_items = await el.query_selector_all("div.event-item, span.event, div.score-info")
+        for event in event_items:
+            event_text = (await event.inner_text()).strip()
+            
+            # Detect yellow card
+            if "🟨" in event_text or "yellow" in event_text.lower():
+                details["cards"].append({"type": "yellow", "player": event_text})
+            # Detect red card
+            elif "🟥" in event_text or "red" in event_text.lower():
+                details["cards"].append({"type": "red", "player": event_text})
+            # Detect goal
+            elif "⚽" in event_text or "goal" in event_text.lower() or "gol" in event_text.lower():
+                details["scorers_home"].append(event_text) if "home" in event_text.lower() else details["scorers_away"].append(event_text)
+        
+        # Try to find possession info
+        possession_elem = await el.query_selector("div.possession, span.possession")
+        if possession_elem:
+            poss_text = (await possession_elem.inner_text()).strip()
+            poss_match = re.search(r'(\d+).*?-.*?(\d+)', poss_text)
+            if poss_match:
+                details["possession"] = {
+                    "home": f"{poss_match.group(1)}%",
+                    "away": f"{poss_match.group(2)}%"
+                }
+        
+        # Try to find match stats
+        stats_elem = await el.query_selector("div.match-stats, div.stats-container")
+        if stats_elem:
+            stat_items = await stats_elem.query_selector_all("div.stat-item, span.stat")
+            for stat in stat_items[:6]:  # Limit to 6 main stats
+                stat_text = (await stat.inner_text()).strip()
+                if stat_text:
+                    details["stats"][stat_text] = True
+    
+    except:
+        pass
+    
+    return details
+
+
+async def extract_matches(elements, include_live_details=False) -> tuple:
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
     results_data: List[Dict] = []
@@ -147,6 +229,10 @@ async def extract_matches(elements) -> tuple:
                 "url":        href,
             }
 
+            if status == "live" and include_live_details:
+                live_details = await extract_live_details(el)
+                match_dict.update(live_details)
+
             if status == "live":
                 live_data.append(match_dict)
             elif status == "result":
@@ -162,10 +248,10 @@ async def extract_matches(elements) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# LIVE
+# LIVE — ALL UNIFIED
 # ---------------------------------------------------------------------------
 async def scrape_live(page) -> None:
-    print("\n🔴 Scraping LIVE → today_matches hub ...")
+    print("\n🔴 Scraping LIVE → all leagues ...")
     await page.goto(
         "https://www.ysscores.com/en/today_matches",
         wait_until="domcontentloaded",
@@ -179,42 +265,29 @@ async def scrape_live(page) -> None:
         f.write(await page.content())
 
     wrappers = await page.query_selector_all("div.matches-wrapper")
-    league_live: Dict[str, List[Dict]] = {}
+    all_live_matches: List[Dict] = []
 
     for wrapper in wrappers:
-        champ_title = (await wrapper.get_attribute("champ_title") or "").lower()
-
-        key = None
-        if "tunisian professional league 1" in champ_title or "ligue professionnelle 1" in champ_title:
-            key = "tunisia_ligue1"
-        elif "tunisian cup" in champ_title or "coupe de tunisie" in champ_title:
-            key = "tunisia_cup"
-        elif "premier league" in champ_title and "tunisian" not in champ_title:
-            key = "premier_league"
-        elif "uefa champions" in champ_title:
-            key = "uefa_champions_league"
-        elif "caf champions" in champ_title:
-            key = "caf_champions_league"
-
-        if not key:
-            continue
-
+        champ_title = (await wrapper.get_attribute("champ_title") or "").strip()
+        
         elements = await wrapper.query_selector_all("a.ajax-match-item")
-        live, _, _ = await extract_matches(elements)
+        live, _, _ = await extract_matches(elements, include_live_details=True)
+        
         if live:
-            league_live.setdefault(key, []).extend(live)
+            for match in live:
+                match["league"] = champ_title
+            all_live_matches.extend(live)
 
-    for key, matches in league_live.items():
-        doc_id = f"flashscore_{key}_live"
+    doc_id = "flashscore_live"
+    if all_live_matches:
         save(doc_id, {
-            "matches":   matches,
-            "count":     len(matches),
+            "matches":   all_live_matches,
+            "count":     len(all_live_matches),
             "timestamp": firestore.SERVER_TIMESTAMP,
         })
-        print(f"   ✅ {len(matches):>3} LIVE → {doc_id}")
-
-    if not league_live:
-        print("   ℹ️  No live matches at this time")
+        print(f"   ✅ {len(all_live_matches):>3} LIVE → {doc_id}")
+    else:
+        print("   ℹ️  No live matches")
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +359,7 @@ async def scrape_results(page, league: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# STANDINGS — FIXED: div.rank-row structure, not tables
+# STANDINGS
 # ---------------------------------------------------------------------------
 async def scrape_standings(page, league: dict) -> None:
     standings_url = league.get("standings_url")
@@ -305,19 +378,27 @@ async def scrape_standings(page, league: dict) -> None:
     with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
-    # ysscores uses div.rank-row, not tables
-    rows = await page.query_selector_all("div.rank-row:not(.header)")
+    main_table = await page.query_selector("div#main_table, div.tab-pos-rank, div.rank-group.main")
+    
+    if main_table:
+        rows = await main_table.query_selector_all("div.rank-row:not(.header)")
+    else:
+        rows = await page.query_selector_all("div.rank-row:not(.header)")
     
     table: List[Dict] = []
     for row in rows:
         try:
-            # Position
+            name_div = await row.query_selector("div.rank-col.name div.team-name, div.rank-col.name")
+            if name_div:
+                text = (await name_div.inner_text()).strip().lower()
+                if text == "players" or "player" in text:
+                    break
+
             pos_el = await row.query_selector("div.rank-col.number")
             position = (await pos_el.inner_text()).strip() if pos_el else ""
             if not position or not position.isdigit():
                 continue
 
-            # Team name + logo
             name_div = await row.query_selector("div.rank-col.name div.team-name")
             team = ""
             team_logo = ""
@@ -327,11 +408,13 @@ async def scrape_standings(page, league: dict) -> None:
                     team_logo = (await img.get_attribute("src") or "").strip()
                 info_div = await name_div.query_selector("div.info")
                 team = (await info_div.inner_text()).strip() if info_div else ""
+            else:
+                name_div = await row.query_selector("div.rank-col.name")
+                team = (await name_div.inner_text()).strip() if name_div else ""
 
             if not team:
                 continue
 
-            # Stats
             played_el = await row.query_selector("div.rank-col.played")
             win_el = await row.query_selector("div.rank-col.win")
             equal_el = await row.query_selector("div.rank-col.equal")
@@ -374,7 +457,7 @@ async def scrape_standings(page, league: dict) -> None:
         })
         print(f"   ✅ {len(table):>3} rows STANDINGS → {doc_id}")
     else:
-        print(f"   ⚠️  No standings rows — check debug/{doc_name}_standings.html")
+        print(f"   ⚠️  No standings rows")
 
 
 # ---------------------------------------------------------------------------
