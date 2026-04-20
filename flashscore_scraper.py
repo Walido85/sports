@@ -23,12 +23,13 @@ db = firestore.Client(project='tunisia-radios-d7aa8', credentials=credentials, d
 print("✅ Firestore connected → collection 'test'")
 
 # ---------------------------------------------------------------------------
-# LEAGUES
+# LEAGUES — WITH STANDINGS + LOGOS
 # ---------------------------------------------------------------------------
 LEAGUES = [
     {
         "key": "tunisia_ligue1",
         "name": "Tunisia Ligue 1",
+        "league_logo": "https://imgs.ysscores.com/championship/48/7731690383928.png",
         "url": "https://www.ysscores.com/en/championship/76040/Tunisian-Professional-League-1",
         "standings_url": "https://www.ysscores.com/en/rank/901568/Tunisian-Professional-League-1",
         "results_url": "https://www.ysscores.com/en/championship/76040/Tunisian-Professional-League-1-statics",
@@ -36,6 +37,7 @@ LEAGUES = [
     {
         "key": "tunisia_cup",
         "name": "Tunisia Cup",
+        "league_logo": "https://imgs.ysscores.com/championship/48/6601696547585.png",
         "url": "https://www.ysscores.com/en/championship/533123/Tunisian-Cup",
         "standings_url": None,
         "results_url": "https://www.ysscores.com/en/championship/533123/Tunisian-Cup-statics",
@@ -43,6 +45,7 @@ LEAGUES = [
     {
         "key": "premier_league",
         "name": "Premier League",
+        "league_logo": "https://imgs.ysscores.com/championship/48/3411694791422.png",
         "url": "https://www.ysscores.com/en/championship/6811/Premier-League",
         "standings_url": "https://www.ysscores.com/en/championship/6811/Premier-League-rank",
         "results_url": "https://www.ysscores.com/en/championship/6811/Premier-League-statics",
@@ -50,6 +53,7 @@ LEAGUES = [
     {
         "key": "serie_a",
         "name": "Serie A",
+        "league_logo": "https://imgs.ysscores.com/championship/48/6281692568873.png",
         "url": "https://www.ysscores.com/en/championship/3734/Serie-A",
         "standings_url": "https://www.ysscores.com/en/championship/3734/Serie-A-rank",
         "results_url": "https://www.ysscores.com/en/championship/3734/Serie-A-statics",
@@ -57,6 +61,7 @@ LEAGUES = [
     {
         "key": "ligue_1",
         "name": "Ligue 1",
+        "league_logo": "https://imgs.ysscores.com/championship/48/17656566406099.png",
         "url": "https://www.ysscores.com/en/championship/1933/Ligue-1",
         "standings_url": "https://www.ysscores.com/en/championship/1933/Ligue-1-rank",
         "results_url": "https://www.ysscores.com/en/championship/1933/Ligue-1-statics",
@@ -64,6 +69,7 @@ LEAGUES = [
     {
         "key": "bundesliga",
         "name": "Bundesliga",
+        "league_logo": "https://imgs.ysscores.com/championship/48/17693689565274.png",
         "url": "https://www.ysscores.com/en/championship/2606/Bundesliga",
         "standings_url": "https://www.ysscores.com/en/championship/2606/Bundesliga-rank",
         "results_url": "https://www.ysscores.com/en/championship/2606/Bundesliga-statics",
@@ -71,6 +77,7 @@ LEAGUES = [
     {
         "key": "uefa_champions_league",
         "name": "UEFA Champions League",
+        "league_logo": "https://imgs.ysscores.com/championship/48/1191723239247.png",
         "url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League",
         "standings_url": "https://www.ysscores.com/en/rank/904988/UEFA-Champions-League",
         "results_url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League-statics",
@@ -78,6 +85,7 @@ LEAGUES = [
     {
         "key": "caf_champions_league",
         "name": "CAF Champions League",
+        "league_logo": "https://imgs.ysscores.com/championship/48/4661694112676.png",
         "url": "https://www.ysscores.com/en/championship/77783/CAF-Champions-League",
         "standings_url": "https://www.ysscores.com/en/rank/911131/CAF-Champions-League",
         "results_url": "https://www.ysscores.com/en/championship/77783/CAF-Champions-League-statics",
@@ -112,7 +120,7 @@ def save(doc_id: str, data: dict) -> None:
 
 
 async def extract_live_details(el) -> dict:
-    """Extract comprehensive live match details: minute, scorers, cards, possession."""
+    """Extract comprehensive live match details."""
     details = {
         "minute": "",
         "scorers_home": [],
@@ -123,7 +131,6 @@ async def extract_live_details(el) -> dict:
     }
     
     try:
-        # Try to get minute from result-wrap
         result_el = await el.query_selector("div.result-wrap")
         if result_el:
             result_text = (await result_el.inner_text()).strip()
@@ -131,22 +138,20 @@ async def extract_live_details(el) -> dict:
             if minute_match:
                 details["minute"] = f"{minute_match.group(1)}'"
         
-        # Try to find event list (goals/cards)
         event_items = await el.query_selector_all("div.event-item, span.event, div.score-info")
         for event in event_items:
             event_text = (await event.inner_text()).strip()
             
-            # Detect yellow card
             if "🟨" in event_text or "yellow" in event_text.lower():
                 details["cards"].append({"type": "yellow", "player": event_text})
-            # Detect red card
             elif "🟥" in event_text or "red" in event_text.lower():
                 details["cards"].append({"type": "red", "player": event_text})
-            # Detect goal
             elif "⚽" in event_text or "goal" in event_text.lower() or "gol" in event_text.lower():
-                details["scorers_home"].append(event_text) if "home" in event_text.lower() else details["scorers_away"].append(event_text)
+                if "home" in event_text.lower():
+                    details["scorers_home"].append(event_text)
+                else:
+                    details["scorers_away"].append(event_text)
         
-        # Try to find possession info
         possession_elem = await el.query_selector("div.possession, span.possession")
         if possession_elem:
             poss_text = (await possession_elem.inner_text()).strip()
@@ -157,11 +162,10 @@ async def extract_live_details(el) -> dict:
                     "away": f"{poss_match.group(2)}%"
                 }
         
-        # Try to find match stats
         stats_elem = await el.query_selector("div.match-stats, div.stats-container")
         if stats_elem:
             stat_items = await stats_elem.query_selector_all("div.stat-item, span.stat")
-            for stat in stat_items[:6]:  # Limit to 6 main stats
+            for stat in stat_items[:6]:
                 stat_text = (await stat.inner_text()).strip()
                 if stat_text:
                     details["stats"][stat_text] = True
@@ -172,7 +176,7 @@ async def extract_live_details(el) -> dict:
     return details
 
 
-async def extract_matches(elements, include_live_details=False) -> tuple:
+async def extract_matches(elements, league_logo="", include_live_details=False) -> tuple:
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
     results_data: List[Dict] = []
@@ -222,6 +226,7 @@ async def extract_matches(elements, include_live_details=False) -> tuple:
                 "away":       away,
                 "home_logo":  home_logo,
                 "away_logo":  away_logo,
+                "league_logo": league_logo,
                 "score":      score,
                 "time":       time,
                 "status":     status,
@@ -269,9 +274,20 @@ async def scrape_live(page) -> None:
 
     for wrapper in wrappers:
         champ_title = (await wrapper.get_attribute("champ_title") or "").strip()
+        champ_img = (await wrapper.get_attribute("champ_img") or "").strip()
+        
+        # Find matching league to get logo
+        league_logo = ""
+        for league in LEAGUES:
+            if league["name"].lower() in champ_title.lower() or champ_title.lower() in league["name"].lower():
+                league_logo = league.get("league_logo", "")
+                break
+        
+        if not league_logo:
+            league_logo = champ_img  # Fallback to champ_img from DOM
         
         elements = await wrapper.query_selector_all("a.ajax-match-item")
-        live, _, _ = await extract_matches(elements, include_live_details=True)
+        live, _, _ = await extract_matches(elements, league_logo=league_logo, include_live_details=True)
         
         if live:
             for match in live:
@@ -295,6 +311,7 @@ async def scrape_live(page) -> None:
 # ---------------------------------------------------------------------------
 async def scrape_fixtures(page, league: dict) -> None:
     doc_name = league["key"]
+    league_logo = league.get("league_logo", "")
     print(f"   ⏳ Fixtures → {league['name']} ...")
 
     await page.goto(league["url"], wait_until="domcontentloaded", timeout=60000)
@@ -308,11 +325,13 @@ async def scrape_fixtures(page, league: dict) -> None:
     elements = await page.query_selector_all("a.ajax-match-item")
     print(f"      Found {len(elements)} elements")
 
-    _, fixtures_data, _ = await extract_matches(elements)
+    _, fixtures_data, _ = await extract_matches(elements, league_logo=league_logo)
 
     doc_id = f"flashscore_{doc_name}_fixtures"
     if fixtures_data:
         save(doc_id, {
+            "league_name": league["name"],
+            "league_logo": league_logo,
             "matches":   fixtures_data,
             "count":     len(fixtures_data),
             "timestamp": firestore.SERVER_TIMESTAMP,
@@ -327,6 +346,7 @@ async def scrape_fixtures(page, league: dict) -> None:
 # ---------------------------------------------------------------------------
 async def scrape_results(page, league: dict) -> None:
     doc_name = league["key"]
+    league_logo = league.get("league_logo", "")
     results_url = league.get("results_url")
     if not results_url:
         return
@@ -344,11 +364,13 @@ async def scrape_results(page, league: dict) -> None:
     elements = await page.query_selector_all("a.ajax-match-item")
     print(f"      Found {len(elements)} elements")
 
-    _, _, results_data = await extract_matches(elements)
+    _, _, results_data = await extract_matches(elements, league_logo=league_logo)
 
     doc_id = f"flashscore_{doc_name}_results"
     if results_data:
         save(doc_id, {
+            "league_name": league["name"],
+            "league_logo": league_logo,
             "matches":   results_data,
             "count":     len(results_data),
             "timestamp": firestore.SERVER_TIMESTAMP,
@@ -368,6 +390,7 @@ async def scrape_standings(page, league: dict) -> None:
         return
 
     doc_name = league["key"]
+    league_logo = league.get("league_logo", "")
     print(f"   ⏳ Standings → {league['name']} ...")
 
     await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
@@ -451,6 +474,8 @@ async def scrape_standings(page, league: dict) -> None:
     doc_id = f"flashscore_{doc_name}_standings"
     if table:
         save(doc_id, {
+            "league_name": league["name"],
+            "league_logo": league_logo,
             "table":     table,
             "count":     len(table),
             "timestamp": firestore.SERVER_TIMESTAMP,
