@@ -118,7 +118,6 @@ def parse_time(result_text: str) -> str:
 
 def save(doc_id: str, data: dict, retention_days: int = 30) -> None:
     """Save current + keep only 30 days of history."""
-    # Add timestamp as string instead of firestore.SERVER_TIMESTAMP
     data["timestamp"] = datetime.utcnow().isoformat()
     
     db.collection('football').document(doc_id).set(data)
@@ -227,8 +226,32 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
             match_id    = (await el.get_attribute("match_id") or "").strip()
             href        = (await el.get_attribute("href") or "").strip()
 
-            result_el   = await el.query_selector("div.result-wrap")
-            result_text = (await result_el.inner_text()).strip() if result_el else ""
+            # TRY MULTIPLE SCORE LOCATIONS
+            result_text = ""
+            
+            # Method 1: div.result-wrap (standard)
+            result_el = await el.query_selector("div.result-wrap")
+            if result_el:
+                result_text = (await result_el.inner_text()).strip()
+            
+            # Method 2: span.score (hub page format)
+            if not result_text:
+                score_el = await el.query_selector("span.score, div.score, span.result")
+                if score_el:
+                    result_text = (await score_el.inner_text()).strip()
+            
+            # Method 3: Look in event container
+            if not result_text:
+                event_el = await el.query_selector("div.event-info, div.match-info")
+                if event_el:
+                    result_text = (await event_el.inner_text()).strip()
+            
+            # Method 4: Direct text content from match element
+            if not result_text:
+                all_text = (await el.inner_text()).strip()
+                score_match = re.search(r'(\d+)\s*-\s*(\d+)', all_text)
+                if score_match:
+                    result_text = f"{score_match.group(1)} - {score_match.group(2)}"
 
             status = classify_status(result_text, css_classes)
             score  = parse_score(result_text) if status in ("live", "result") else "-- - --"
@@ -409,86 +432,192 @@ async def scrape_standings(page, league: dict) -> None:
     with open(f"debug/{league_name}_standings.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
-    rows = await page.query_selector_all("div.rank-row:not(.header)")
+    # Get ALL rows (both group headers and team rows)
+    all_rows = await page.query_selector_all("div.rank-row")
     
-    table: List[Dict] = []
-    max_teams = 30
+    # Check if grouped by looking for group headers
+    has_groups = False
+    for row in all_rows:
+        row_text = (await row.inner_text()).strip().lower()
+        if re.match(r'^group\s+[a-z]', row_text) or "group" in row_text and "team" not in row_text:
+            has_groups = True
+            break
     
-    for row in rows:
-        try:
-            header_check = await row.query_selector("div.rank-col.name")
-            if header_check:
-                header_text = (await header_check.inner_text()).strip().lower()
-                if header_text == "players" or "player" in header_text:
+    if has_groups:
+        # GROUPED STANDINGS
+        print(f"      📊 Grouped standings detected")
+        groups = []
+        current_group = None
+        current_teams = []
+        
+        for row in all_rows:
+            row_text = (await row.inner_text()).strip()
+            
+            # Check if this is a group header
+            if re.match(r'^group\s+[a-z]|^[a-z]+\s+\d+', row_text.lower()) and not await row.query_selector("div.rank-col.number"):
+                # Save previous group if exists
+                if current_group and current_teams:
+                    groups.append({
+                        "group": current_group,
+                        "teams": current_teams,
+                        "count": len(current_teams)
+                    })
+                # Start new group
+                current_group = row_text.split('\n')[0] if '\n' in row_text else row_text
+                current_teams = []
+                continue
+            
+            # Skip header rows
+            if await row.query_selector("div.rank-col.header"):
+                continue
+            
+            # Check for "players" section
+            name_check = await row.query_selector("div.rank-col.name")
+            if name_check:
+                check_text = (await name_check.inner_text()).strip().lower()
+                if "players" in check_text:
                     break
             
+            # Extract team data
             pos_el = await row.query_selector("div.rank-col.number")
             position = (await pos_el.inner_text()).strip() if pos_el else ""
-            if not position or not position.isdigit():
-                continue
-
-            name_div = await row.query_selector("div.rank-col.name div.team-name")
-            team = ""
-            team_logo = ""
-            if name_div:
-                img = await name_div.query_selector("img")
-                if img:
-                    team_logo = (await img.get_attribute("src") or "").strip()
-                info_div = await name_div.query_selector("div.info")
-                team = (await info_div.inner_text()).strip() if info_div else ""
-            else:
-                name_div = await row.query_selector("div.rank-col.name")
-                team = (await name_div.inner_text()).strip() if name_div else ""
-
-            if not team:
-                continue
-
-            played_el = await row.query_selector("div.rank-col.played")
-            win_el = await row.query_selector("div.rank-col.win")
-            equal_el = await row.query_selector("div.rank-col.equal")
-            lose_el = await row.query_selector("div.rank-col.lose")
-            goals_el = await row.query_selector("div.rank-col.goals")
-            diff_el = await row.query_selector("div.rank-col.diff")
-            points_el = await row.query_selector("div.rank-col.points")
-
-            played = (await played_el.inner_text()).strip() if played_el else ""
-            wins = (await win_el.inner_text()).strip() if win_el else ""
-            draws = (await equal_el.inner_text()).strip() if equal_el else ""
-            losses = (await lose_el.inner_text()).strip() if lose_el else ""
-            goals = (await goals_el.inner_text()).strip() if goals_el else ""
-            diff = (await diff_el.inner_text()).strip() if diff_el else ""
-            points = (await points_el.inner_text()).strip() if points_el else ""
-
-            table.append({
-                "position":  position,
-                "team":      team,
-                "team_logo": team_logo,
-                "played":    played,
-                "wins":      wins,
-                "draws":     draws,
-                "losses":    losses,
-                "goals":     goals,
-                "diff":      diff,
-                "points":    points,
-            })
             
-            if len(table) >= max_teams:
-                break
-
-        except Exception as e:
-            print(f"      ⚠️ Skipped row: {e}")
-            continue
-
-    if table:
-        save(f"{league_name}_standings", {
-            "league": league_name,
-            "league_logo": league_logo,
-            "table":     table,
-            "count":     len(table),
-        })
-        print(f"   ✅ {len(table):>3} STANDINGS")
+            if position and position.isdigit():
+                name_div = await row.query_selector("div.rank-col.name div.team-name")
+                team = ""
+                team_logo = ""
+                
+                if name_div:
+                    img = await name_div.query_selector("img")
+                    if img:
+                        team_logo = (await img.get_attribute("src") or "").strip()
+                    info_div = await name_div.query_selector("div.info")
+                    team = (await info_div.inner_text()).strip() if info_div else ""
+                
+                if not team:
+                    name_div = await row.query_selector("div.rank-col.name")
+                    team = (await name_div.inner_text()).strip() if name_div else ""
+                
+                if team and current_group:
+                    played_el = await row.query_selector("div.rank-col.played")
+                    win_el = await row.query_selector("div.rank-col.win")
+                    equal_el = await row.query_selector("div.rank-col.equal")
+                    lose_el = await row.query_selector("div.rank-col.lose")
+                    goals_el = await row.query_selector("div.rank-col.goals")
+                    diff_el = await row.query_selector("div.rank-col.diff")
+                    points_el = await row.query_selector("div.rank-col.points")
+                    
+                    current_teams.append({
+                        "position":  position,
+                        "team":      team,
+                        "team_logo": team_logo,
+                        "played":    (await played_el.inner_text()).strip() if played_el else "",
+                        "wins":      (await win_el.inner_text()).strip() if win_el else "",
+                        "draws":     (await equal_el.inner_text()).strip() if equal_el else "",
+                        "losses":    (await lose_el.inner_text()).strip() if lose_el else "",
+                        "goals":     (await goals_el.inner_text()).strip() if goals_el else "",
+                        "diff":      (await diff_el.inner_text()).strip() if diff_el else "",
+                        "points":    (await points_el.inner_text()).strip() if points_el else "",
+                    })
+        
+        # Save last group
+        if current_group and current_teams:
+            groups.append({
+                "group": current_group,
+                "teams": current_teams,
+                "count": len(current_teams)
+            })
+        
+        if groups:
+            save(f"{league_name}_standings", {
+                "league": league_name,
+                "league_logo": league_logo,
+                "type": "grouped",
+                "groups": groups,
+                "total_groups": len(groups),
+            })
+            print(f"   ✅ {len(groups)} groups with {sum(g['count'] for g in groups)} teams")
+    
     else:
-        print(f"   ⚠️  No standings rows")
+        # SINGLE TABLE
+        table = []
+        max_teams = 30
+        
+        for row in all_rows:
+            try:
+                # Skip header
+                if await row.query_selector("div.rank-col.header"):
+                    continue
+                
+                # Check for "players" section
+                name_check = await row.query_selector("div.rank-col.name")
+                if name_check:
+                    check_text = (await name_check.inner_text()).strip().lower()
+                    if "players" in check_text:
+                        break
+                
+                pos_el = await row.query_selector("div.rank-col.number")
+                position = (await pos_el.inner_text()).strip() if pos_el else ""
+                
+                if not position or not position.isdigit():
+                    continue
+                
+                name_div = await row.query_selector("div.rank-col.name div.team-name")
+                team = ""
+                team_logo = ""
+                
+                if name_div:
+                    img = await name_div.query_selector("img")
+                    if img:
+                        team_logo = (await img.get_attribute("src") or "").strip()
+                    info_div = await name_div.query_selector("div.info")
+                    team = (await info_div.inner_text()).strip() if info_div else ""
+                else:
+                    name_div = await row.query_selector("div.rank-col.name")
+                    team = (await name_div.inner_text()).strip() if name_div else ""
+                
+                if not team:
+                    continue
+                
+                played_el = await row.query_selector("div.rank-col.played")
+                win_el = await row.query_selector("div.rank-col.win")
+                equal_el = await row.query_selector("div.rank-col.equal")
+                lose_el = await row.query_selector("div.rank-col.lose")
+                goals_el = await row.query_selector("div.rank-col.goals")
+                diff_el = await row.query_selector("div.rank-col.diff")
+                points_el = await row.query_selector("div.rank-col.points")
+                
+                table.append({
+                    "position":  position,
+                    "team":      team,
+                    "team_logo": team_logo,
+                    "played":    (await played_el.inner_text()).strip() if played_el else "",
+                    "wins":      (await win_el.inner_text()).strip() if win_el else "",
+                    "draws":     (await equal_el.inner_text()).strip() if equal_el else "",
+                    "losses":    (await lose_el.inner_text()).strip() if lose_el else "",
+                    "goals":     (await goals_el.inner_text()).strip() if goals_el else "",
+                    "diff":      (await diff_el.inner_text()).strip() if diff_el else "",
+                    "points":    (await points_el.inner_text()).strip() if points_el else "",
+                })
+                
+                if len(table) >= max_teams:
+                    break
+            
+            except Exception as e:
+                print(f"      ⚠️ Skipped row: {e}")
+                continue
+        
+        if table:
+            save(f"{league_name}_standings", {
+                "league": league_name,
+                "league_logo": league_logo,
+                "type": "single",
+                "table": table,
+                "count": len(table),
+            })
+            print(f"   ✅ {len(table)} teams")
+        else:
+            print(f"   ⚠️  No standings rows")
 
 
 # ---------------------------------------------------------------------------
