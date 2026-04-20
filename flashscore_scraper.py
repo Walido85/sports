@@ -43,8 +43,9 @@ def clean_text(text: str) -> str:
     return text
 
 async def scrape_matches(page, doc_name: str):
-    await page.wait_for_selector('[data-testid="event-row"], .event-row, div[class*="match"]', timeout=30000)
-    await asyncio.sleep(5)
+    print(f"   ⏳ Loading matches for {doc_name}...")
+    await page.wait_for_load_state("networkidle", timeout=90000)
+    await asyncio.sleep(8)
 
     os.makedirs("debug", exist_ok=True)
     await page.screenshot(path=f"debug/{doc_name}_matches.png")
@@ -52,26 +53,27 @@ async def scrape_matches(page, doc_name: str):
         f.write(await page.content())
     print(f"📸 Debug saved for {doc_name} matches")
 
-    matches = await page.query_selector_all('[data-testid="event-row"], .event-row, div[class*="match"]')
+    # Very broad selectors for SofaScore match rows
+    matches = await page.query_selector_all('div[class*="match"], [data-testid*="event"], .event, .match-row, div[data-testid*="match"]')
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
     results_data: List[Dict] = []
 
     for match in matches:
         try:
-            home = clean_text(await (await match.query_selector('[data-testid="team-name-home"], .home-team')).inner_text())
-            away = clean_text(await (await match.query_selector('[data-testid="team-name-away"], .away-team')).inner_text())
+            home = clean_text(await (await match.query_selector('[data-testid*="home"], .home-team, .team-home, .team-name')).inner_text() if await match.query_selector('[data-testid*="home"], .home-team, .team-home, .team-name') else "N/A")
+            away = clean_text(await (await match.query_selector('[data-testid*="away"], .away-team, .team-away, .team-name')).inner_text() if await match.query_selector('[data-testid*="away"], .away-team, .team-away, .team-name') else "N/A")
 
             if home == "N/A" or away == "N/A":
-                names = await match.query_selector_all('[data-testid="team-name"], .team-name')
+                names = await match.query_selector_all('[data-testid*="team"], .team-name')
                 if len(names) >= 2:
                     home = clean_text(await names[0].inner_text())
                     away = clean_text(await names[1].inner_text())
 
-            score_elem = await match.query_selector('[data-testid="score"], .score')
+            score_elem = await match.query_selector('[data-testid*="score"], .score')
             score = await score_elem.inner_text() if score_elem else "-- - --"
 
-            status_elem = await match.query_selector('[data-testid="status"], .status, .minute')
+            status_elem = await match.query_selector('[data-testid*="status"], .status, .minute, .time')
             status = await status_elem.inner_text() if status_elem else ""
 
             match_dict = {
@@ -104,14 +106,16 @@ async def scrape_matches(page, doc_name: str):
         print(f"✅ Saved {len(results_data)} RESULTS → flashscore_{doc_name}_results")
 
 async def scrape_standings(page, doc_name: str):
-    await asyncio.sleep(4)
+    print(f"   ⏳ Loading standings for {doc_name}...")
+    await asyncio.sleep(6)
+
     os.makedirs("debug", exist_ok=True)
     await page.screenshot(path=f"debug/{doc_name}_standings.png")
     with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
     print(f"📸 Debug saved for {doc_name} standings")
 
-    rows = await page.query_selector_all('tr.standings-row, .standings-table tr, [data-testid="standing-row"]')
+    rows = await page.query_selector_all('tr.standings-row, .standings-table tr, [data-testid="standing-row"], tr')
     table = []
     for row in rows:
         cells = await row.query_selector_all('td, th, div')
@@ -142,9 +146,13 @@ async def main():
 
         for league in LEAGUES:
             print(f"\n🔄 Processing {league['name']}...")
-            await page.goto(league["url"], wait_until="networkidle", timeout=60000)
-            await scrape_matches(page, league["key"])
-            await scrape_standings(page, league["key"])
+            try:
+                await page.goto(league["url"], wait_until="networkidle", timeout=90000)
+                await scrape_matches(page, league["key"])
+                await scrape_standings(page, league["key"])
+            except Exception as e:
+                print(f"⚠️ Error processing {league['name']}: {e}")
+                continue
 
         await browser.close()
     print("\n🎉 SofaScore run completed – check Firestore 'test' collection")
