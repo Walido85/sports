@@ -3,7 +3,7 @@ import json
 import os
 import re
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from google.cloud import firestore
 from google.oauth2 import service_account
 
@@ -32,7 +32,7 @@ def clean_team(text: str) -> str:
     return text
 
 async def scrape_matches(page, league_key: str):
-    await page.wait_for_timeout(10000)
+    await page.wait_for_timeout(12000)
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     
     matches = await page.query_selector_all('.event__match, [class*="event__match"]')
@@ -75,10 +75,9 @@ async def main():
     creds = json.loads(os.environ["FIREBASE_CREDENTIALS"])
     credentials = service_account.Credentials.from_service_account_info(creds)
     
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+    async with Stealth().use_async(async_playwright()) as playwright:
+        browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
         page = await browser.new_page()
-        await stealth_async(page)   # ← FIXED LINE
         
         for league in LEAGUES:
             print(f"Processing {league['name']}...")
@@ -86,7 +85,7 @@ async def main():
             await scrape_matches(page, league["key"])
         
         await browser.close()
-    print("Run completed")
+    print("✅ Run completed - check GitHub Artifacts for debug files")
 
 if __name__ == "__main__":
     asyncio.run(main())
