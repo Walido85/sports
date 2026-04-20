@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Requirements
+      - name: Install Requirements + Playwright
         run: |
           pip install -r requirements.txt
           playwright install chromium --with-deps
@@ -48,14 +48,14 @@ jobs:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python flashscore_scraper.py
 
-      - name: Upload debug files (screenshot + HTML) if any
+      - name: Upload debug files (screenshot + HTML)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: flashscore-debug-files
           path: |
-            debug_*.png
-            debug_*_source.html
+            debug/*.png
+            debug/*.html
           retention-days: 7
 
       - name: Show Summary
