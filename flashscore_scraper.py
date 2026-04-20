@@ -21,17 +21,20 @@ credentials = service_account.Credentials.from_service_account_info(cred_dict)
 db = firestore.Client(project='tunisia-radios-d7aa8', credentials=credentials, database='walid')
 print("Firestore connected → collection 'test'")
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-]
+# Ysscores recommended headers (from your screenshot)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_4 like Mac OS X) AppleWebKit/605.1.15",
+    "Referer": "https://www.ysscores.com/",
+    "X-Requested-With": "XMLHttpRequest",
+}
 
 LEAGUES = [
-    {"key": "tunisia_ligue1", "name": "Tunisia Ligue 1", "url": "https://www.flashscore.com/football/tunisia/ligue-professionnelle-1/", "standings_url": "https://www.flashscore.com/football/tunisia/ligue-professionnelle-1/standings/"},
-    {"key": "tunisia_ligue2", "name": "Tunisia Ligue 2", "url": "https://www.flashscore.com/football/tunisia/ligue-2/", "standings_url": "https://www.flashscore.com/football/tunisia/ligue-2/standings/"},
-    {"key": "tunisia_cup", "name": "Tunisia Cup", "url": "https://www.flashscore.com/football/tunisia/tunisia-cup/", "standings_url": None},
-    {"key": "premier_league", "name": "Premier League", "url": "https://www.flashscore.com/football/england/premier-league/", "standings_url": "https://www.flashscore.com/football/england/premier-league/standings/OEEq9Yvp/standings/overall/"},
-    {"key": "uefa_champions_league", "name": "UEFA Champions League", "url": "https://www.flashscore.com/football/europe/champions-league/", "standings_url": "https://www.flashscore.com/football/europe/champions-league/standings/"},
-    {"key": "caf_champions_league", "name": "CAF Champions League", "url": "https://www.flashscore.com/football/africa/caf-champions-league/", "standings_url": "https://www.flashscore.com/football/africa/caf-champions-league/standings/hdkWXHOq/"},
+    {"key": "tunisia_ligue1", "name": "Tunisia Ligue 1", "url": "https://www.ysscores.com/en/football/tunisia/ligue-professionnelle-1"},
+    {"key": "tunisia_ligue2", "name": "Tunisia Ligue 2", "url": "https://www.ysscores.com/en/football/tunisia/ligue-2"},
+    {"key": "tunisia_cup", "name": "Tunisia Cup", "url": "https://www.ysscores.com/en/football/tunisia/tunisia-cup"},
+    {"key": "premier_league", "name": "Premier League", "url": "https://www.ysscores.com/en/football/england/premier-league"},
+    {"key": "uefa_champions_league", "name": "UEFA Champions League", "url": "https://www.ysscores.com/en/football/europe/uefa-champions-league"},
+    {"key": "caf_champions_league", "name": "CAF Champions League", "url": "https://www.ysscores.com/en/football/africa/caf-champions-league"},
 ]
 
 def clean_text(text: str) -> str:
@@ -44,9 +47,8 @@ def clean_text(text: str) -> str:
 
 async def scrape_matches(page, doc_name: str):
     print(f"   ⏳ Loading matches for {doc_name}...")
-    await page.goto(LEAGUES[0]["url"] if "tunisia" in doc_name else "https://www.flashscore.com/", wait_until="domcontentloaded", timeout=60000)
-    await page.wait_for_selector('.event__match', timeout=45000)
-    await asyncio.sleep(8)
+    await page.goto(LEAGUES[0]["url"] if "tunisia" in doc_name else "https://www.ysscores.com/", wait_until="domcontentloaded", timeout=90000)
+    await asyncio.sleep(10)
 
     os.makedirs("debug", exist_ok=True)
     await page.screenshot(path=f"debug/{doc_name}_matches.png")
@@ -54,38 +56,33 @@ async def scrape_matches(page, doc_name: str):
         f.write(await page.content())
     print(f"📸 Debug saved for {doc_name} matches")
 
-    matches = await page.query_selector_all('.event__match')
+    matches = await page.query_selector_all('div.match, .match-row, [class*="match"], .event')
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
     results_data: List[Dict] = []
 
     for match in matches:
         try:
-            home = clean_text(await (await match.query_selector('.event__participant--home')).inner_text() if await match.query_selector('.event__participant--home') else "N/A")
-            away = clean_text(await (await match.query_selector('.event__participant--away')).inner_text() if await match.query_selector('.event__participant--away') else "N/A")
+            home = clean_text(await (await match.query_selector('.home-team, .team-home, .team-name')).inner_text() if await match.query_selector('.home-team, .team-home, .team-name') else "N/A")
+            away = clean_text(await (await match.query_selector('.away-team, .team-away, .team-name')).inner_text() if await match.query_selector('.away-team, .team-away, .team-name') else "N/A")
 
             if home == "N/A" or away == "N/A":
-                names = await match.query_selector_all('.event__participantName')
+                names = await match.query_selector_all('.team-name')
                 if len(names) >= 2:
                     home = clean_text(await names[0].inner_text())
                     away = clean_text(await names[1].inner_text())
 
-            score_elems = await match.query_selector_all('.event__score')
-            score = f"{await score_elems[0].inner_text()} - {await score_elems[1].inner_text()}" if len(score_elems) >= 2 else "-- - --"
+            score_elem = await match.query_selector('.score, .result')
+            score = await score_elem.inner_text() if score_elem else "-- - --"
 
-            time_elem = await match.query_selector('.event__time')
-            raw = await time_elem.inner_text() if time_elem else ""
-            date_m = re.search(r'(\d{2}\.\d{2}\.)', raw)
-            time_m = re.search(r'(\d{2}:\d{2})', raw)
-            date_str = date_m.group(1) if date_m else ""
-            time_str = time_m.group(1) if time_m else ""
-            status = raw.replace(date_str, "").replace(time_str, "").strip()
+            status_elem = await match.query_selector('.status, .minute, .time')
+            status = await status_elem.inner_text() if status_elem else ""
 
             match_dict = {
                 "home": home,
                 "away": away,
-                "date": date_str,
-                "time": time_str or status,
+                "date": "",
+                "time": status,
                 "live_score": score,
                 "status": status
             }
@@ -102,13 +99,13 @@ async def scrape_matches(page, doc_name: str):
 
     if live_data:
         db.collection('test').document(f"flashscore_{doc_name}_live").set({"matches": live_data, "timestamp": firestore.SERVER_TIMESTAMP})
-        print(f"✅ Saved {len(live_data)} LIVE → flashscore_{doc_name}_live")
+        print(f"✅ Saved {len(live_data)} LIVE")
     if fixtures_data:
         db.collection('test').document(f"flashscore_{doc_name}_fixtures").set({"matches": fixtures_data, "timestamp": firestore.SERVER_TIMESTAMP})
-        print(f"✅ Saved {len(fixtures_data)} FIXTURES → flashscore_{doc_name}_fixtures")
+        print(f"✅ Saved {len(fixtures_data)} FIXTURES")
     if results_data:
         db.collection('test').document(f"flashscore_{doc_name}_results").set({"matches": results_data, "timestamp": firestore.SERVER_TIMESTAMP})
-        print(f"✅ Saved {len(results_data)} RESULTS → flashscore_{doc_name}_results")
+        print(f"✅ Saved {len(results_data)} RESULTS")
 
 async def scrape_standings(page, doc_name: str):
     print(f"   ⏳ Loading standings for {doc_name}...")
@@ -120,10 +117,10 @@ async def scrape_standings(page, doc_name: str):
         f.write(await page.content())
     print(f"📸 Debug saved for {doc_name} standings")
 
-    rows = await page.query_selector_all('tr.table__row')
+    rows = await page.query_selector_all('tr.standings-row, .standings-table tr, tr')
     table = []
     for row in rows:
-        cells = await row.query_selector_all('td, .table__cell, div, span')
+        cells = await row.query_selector_all('td, th, div')
         texts = [clean_text(await c.inner_text()) for c in cells]
         texts = [t for t in texts if t != "N/A"]
         if len(texts) >= 8 and texts[0].replace('.', '').strip().isdigit():
@@ -139,30 +136,31 @@ async def scrape_standings(page, doc_name: str):
             })
     if table:
         db.collection('test').document(f"flashscore_{doc_name}_standings").set({"table": table, "timestamp": firestore.SERVER_TIMESTAMP})
-        print(f"✅ Saved {len(table)} STANDINGS → flashscore_{doc_name}_standings")
+        print(f"✅ Saved {len(table)} STANDINGS")
     else:
         print(f"⚠️ No standings for {doc_name}")
 
 async def main():
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-        context = await browser.new_context(user_agent=random.choice(USER_AGENTS))
+        context = await browser.new_context(
+            user_agent=HEADERS["User-Agent"],
+            extra_http_headers=HEADERS
+        )
         page = await context.new_page()
 
         for league in LEAGUES:
             print(f"\n🔄 Processing {league['name']}...")
             try:
-                await page.goto(league["url"], wait_until="domcontentloaded", timeout=60000)
+                await page.goto(league["url"], wait_until="domcontentloaded", timeout=90000)
                 await scrape_matches(page, league["key"])
-                if league.get("standings_url"):
-                    await page.goto(league["standings_url"], wait_until="domcontentloaded", timeout=60000)
-                    await scrape_standings(page, league["key"])
+                await scrape_standings(page, league["key"])
             except Exception as e:
                 print(f"⚠️ Error processing {league['name']}: {e}")
                 continue
 
         await browser.close()
-    print("\n🎉 Run completed – check Firestore 'test' collection")
+    print("\n🎉 Ysscores run completed – check Firestore 'test' collection")
 
 if __name__ == "__main__":
     asyncio.run(main())
