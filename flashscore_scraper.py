@@ -34,9 +34,22 @@ LEAGUES = [
     {"key": "caf_champions_league",    "name": "CAF Champions League",     "url": "https://www.flashscore.com/football/africa/caf-champions-league/",            "standings_url": "https://www.flashscore.com/football/africa/caf-champions-league/standings/hdkWXHOq/"},
 ]
 
+def is_valid_team_name(text: str) -> bool:
+    text = text.strip()
+    if len(text) < 3: return False
+    if text in ["Pen", "pen", "FT", "AET", "PEN"]: return False
+    if re.search(r'^\d+$', text): return False
+    return True
+
 async def scrape_matches(page, doc_name: str):
     await page.wait_for_selector('.event__match', timeout=30000)
-    await asyncio.sleep(4)  # extra render time
+    await asyncio.sleep(4)
+
+    # === DEBUG: save exact HTML and screenshot for every league ===
+    await page.screenshot(path=f"debug_{doc_name}_matches.png")
+    with open(f"debug_{doc_name}_matches.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+    print(f"📸 Debug files saved for {doc_name} (matches)")
 
     matches = await page.query_selector_all('.event__match')
     live_data: List[Dict] = []
@@ -45,39 +58,32 @@ async def scrape_matches(page, doc_name: str):
 
     for match in matches:
         try:
-            # === STRONGEST TEAM NAME EXTRACTION (2026 structure) ===
             home_text = away_text = "N/A"
 
-            # Primary (most accurate)
             home_elem = await match.query_selector('.event__participant--home')
             away_elem = await match.query_selector('.event__participant--away')
             if home_elem:
                 full = await home_elem.inner_text()
-                home_text = full.strip().split('\n')[0].strip()
+                for line in full.split('\n'):
+                    if is_valid_team_name(line):
+                        home_text = line.strip()
+                        break
             if away_elem:
                 full = await away_elem.inner_text()
-                away_text = full.strip().split('\n')[0].strip()
+                for line in full.split('\n'):
+                    if is_valid_team_name(line):
+                        away_text = line.strip()
+                        break
 
-            # Fallback 1
-            if home_text == "N/A" or away_text == "N/A":
+            if not is_valid_team_name(home_text) or not is_valid_team_name(away_text):
                 names = await match.query_selector_all('.event__participantName')
                 if len(names) >= 2:
                     home_text = await names[0].inner_text()
                     away_text = await names[1].inner_text()
 
-            # Fallback 2 (broadest)
-            if home_text == "N/A" or away_text == "N/A":
-                all_text = await match.inner_text()
-                lines = [line.strip() for line in all_text.split('\n') if line.strip()]
-                if len(lines) >= 4:
-                    home_text = lines[1]
-                    away_text = lines[3]
-
-            # Score
             score_elems = await match.query_selector_all('.event__score')
             score = f"{await score_elems[0].inner_text()} - {await score_elems[1].inner_text()}" if len(score_elems) >= 2 else "-- - --"
 
-            # Date + Time + Status
             time_elem = await match.query_selector('.event__time')
             raw = await time_elem.inner_text() if time_elem else ""
             date_match = re.search(r'(\d{2}\.\d{2}\.)', raw)
@@ -95,8 +101,7 @@ async def scrape_matches(page, doc_name: str):
                 "status": status
             }
 
-            # Classify
-            if "FT" in status or "pen" in status.lower() or score != "-- - --":
+            if "FT" in status or "pen" in status.lower() or "AET" in status or score != "-- - --":
                 results_data.append(match_dict)
             elif "'" in status or "live" in status.lower():
                 live_data.append(match_dict)
@@ -106,7 +111,6 @@ async def scrape_matches(page, doc_name: str):
         except:
             continue
 
-    # Save clean documents
     if live_data:
         db.collection('test').document(f"flashscore_{doc_name}_live").set({"matches": live_data, "timestamp": firestore.SERVER_TIMESTAMP})
         print(f"✅ Saved {len(live_data)} LIVE")
@@ -119,14 +123,18 @@ async def scrape_matches(page, doc_name: str):
 
 async def scrape_standings(page, doc_name: str):
     await asyncio.sleep(3)
-    rows = await page.query_selector_all('tr.table__row, .table__row, .standings__row')
+    await page.screenshot(path=f"debug_{doc_name}_standings.png")
+    with open(f"debug_{doc_name}_standings.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+    print(f"📸 Debug files saved for {doc_name} (standings)")
 
+    rows = await page.query_selector_all('tr.table__row, .table__row, .standings__row, div[class*="row"]')
     table = []
     for row in rows:
-        cells = await row.query_selector_all('td.table__cell, .table__cell')
+        cells = await row.query_selector_all('td.table__cell, .table__cell, div, span')
         texts = [await c.inner_text() for c in cells]
         texts = [t.strip() for t in texts if t.strip()]
-        if len(texts) >= 8 and texts[0].replace('.', '').isdigit():
+        if len(texts) >= 8 and texts[0].replace('.', '').strip().isdigit():
             table.append({
                 "position": texts[0],
                 "team": texts[1],
@@ -139,7 +147,7 @@ async def scrape_standings(page, doc_name: str):
             })
     if table:
         db.collection('test').document(f"flashscore_{doc_name}_standings").set({"table": table, "timestamp": firestore.SERVER_TIMESTAMP})
-        print(f"✅ Saved {len(table)} STANDINGS → test/flashscore_{doc_name}_standings")
+        print(f"✅ Saved {len(table)} STANDINGS")
     else:
         print(f"⚠️ No standings for {doc_name}")
 
@@ -159,7 +167,7 @@ async def main():
                 await scrape_standings(page, league["key"])
 
         await browser.close()
-    print("\n🎉 ALL DONE – Home/Away + Standings now fixed in Firestore")
+    print("\n🎉 Run completed – check GitHub Artifacts for debug files")
 
 if __name__ == "__main__":
     asyncio.run(main())
