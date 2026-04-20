@@ -118,6 +118,9 @@ def parse_time(result_text: str) -> str:
 
 def save(doc_id: str, data: dict, retention_days: int = 30) -> None:
     """Save current + keep only 30 days of history."""
+    # Add timestamp as string instead of firestore.SERVER_TIMESTAMP
+    data["timestamp"] = datetime.utcnow().isoformat()
+    
     db.collection('football').document(doc_id).set(data)
     
     timestamp = datetime.utcnow().isoformat()
@@ -313,7 +316,6 @@ async def scrape_live(page) -> None:
         save("live", {
             "matches":   all_live_matches,
             "count":     len(all_live_matches),
-            "timestamp": firestore.SERVER_TIMESTAMP,
         })
         print(f"   ✅ {len(all_live_matches):>3} LIVE")
     else:
@@ -345,7 +347,6 @@ async def scrape_fixtures(page, league: dict) -> None:
             "league_logo": league_logo,
             "matches":   fixtures_data,
             "count":     len(fixtures_data),
-            "timestamp": firestore.SERVER_TIMESTAMP,
         })
         print(f"   ✅ {len(fixtures_data):>3} FIXTURES")
     else:
@@ -381,7 +382,6 @@ async def scrape_results(page, league: dict) -> None:
             "league_logo": league_logo,
             "matches":   results_data,
             "count":     len(results_data),
-            "timestamp": firestore.SERVER_TIMESTAMP,
         })
         print(f"   ✅ {len(results_data):>3} RESULTS")
     else:
@@ -485,7 +485,6 @@ async def scrape_standings(page, league: dict) -> None:
             "league_logo": league_logo,
             "table":     table,
             "count":     len(table),
-            "timestamp": firestore.SERVER_TIMESTAMP,
         })
         print(f"   ✅ {len(table):>3} STANDINGS")
     else:
