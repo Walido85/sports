@@ -6,7 +6,7 @@ import time
 from typing import List, Dict
 
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from google.cloud import firestore
 from google.oauth2 import service_account
 
@@ -28,11 +28,10 @@ USER_AGENTS = [
 async def scrape_flashscore_live(url: str, doc_name: str):
     for attempt in range(3):
         try:
-            async with async_playwright() as p:
+            async with Stealth().use_async(async_playwright()) as p:   # ← NEW v2 API
                 browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
                 context = await browser.new_context(user_agent=random.choice(USER_AGENTS))
                 page = await context.new_page()
-                await stealth_async(page)
 
                 print(f"[{attempt+1}/3] Loading {url}")
                 await page.goto(url, wait_until="networkidle", timeout=60000)
