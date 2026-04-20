@@ -1,85 +1,271 @@
 import asyncio
 import json
 import os
-import random
 import re
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from google.cloud import firestore
 from google.oauth2 import service_account
 
-# --- FIRESTORE ---
+# ---------------------------------------------------------------------------
+# FIRESTORE
+# ---------------------------------------------------------------------------
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
-    print("No FIREBASE_CREDENTIALS found.")
+    print("❌ No FIREBASE_CREDENTIALS found.")
     exit(1)
 
 cred_dict = json.loads(firebase_secret)
 credentials = service_account.Credentials.from_service_account_info(cred_dict)
 db = firestore.Client(project='tunisia-radios-d7aa8', credentials=credentials, database='walid')
-print("Firestore connected → collection 'test'")
+print("✅ Firestore connected → collection 'test'")
 
-# Exact headers from your screenshot (prevents 403)
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_4 like Mac OS X) AppleWebKit/605.1.15",
-    "Referer": "https://www.ysscores.com/",
-    "X-Requested-With": "XMLHttpRequest",
-}
-
+# ---------------------------------------------------------------------------
+# LEAGUES
+# All confirmed IDs from ysscores.com DOM inspection.
+# ⚠️  76041 (Ligue 2) and 76042 (Cup) are unverified — check debug HTML
+#     after first run and correct IDs if pages return 404.
+# ---------------------------------------------------------------------------
 LEAGUES = [
-    # Tunisia - your exact links
-    {"key": "tunisia_ligue1", "name": "Tunisia Ligue 1", 
-     "url": "https://www.ysscores.com/ar/championship/76040/Tunisian-Professional-League-1", 
-     "standings_url": "https://www.ysscores.com/ar/rank/901568/Tunisian-Professional-League-1"},
-    {"key": "tunisia_ligue2", "name": "Tunisia Ligue 2", "url": "https://www.ysscores.com/ar/championship/76041/Tunisian-Professional-League-2", "standings_url": None},
-    {"key": "tunisia_cup", "name": "Tunisia Cup", "url": "https://www.ysscores.com/ar/championship/76042/Tunisian-Cup", "standings_url": None},
-    # Other leagues - Flashscore (most reliable)
-    {"key": "premier_league", "name": "Premier League", "url": "https://www.flashscore.com/football/england/premier-league/", "standings_url": "https://www.flashscore.com/football/england/premier-league/standings/OEEq9Yvp/standings/overall/"},
-    {"key": "uefa_champions_league", "name": "UEFA Champions League", "url": "https://www.flashscore.com/football/europe/champions-league/", "standings_url": "https://www.flashscore.com/football/europe/champions-league/standings/"},
-    {"key": "caf_champions_league", "name": "CAF Champions League", "url": "https://www.flashscore.com/football/africa/caf-champions-league/", "standings_url": "https://www.flashscore.com/football/africa/caf-champions-league/standings/hdkWXHOq/"},
+    {
+        "key": "tunisia_ligue1",
+        "name": "Tunisia Ligue 1",
+        "url": "https://www.ysscores.com/en/championship/76040/Tunisian-Professional-League-1",
+        "standings_url": "https://www.ysscores.com/en/rank/901568/Tunisian-Professional-League-1",
+    },
+    {
+        "key": "tunisia_ligue2",
+        "name": "Tunisia Ligue 2",
+        "url": "https://www.ysscores.com/en/championship/76041/Tunisian-Professional-League-2",
+        "standings_url": "https://www.ysscores.com/en/championship/76041/Tunisian-Professional-League-2-rank",
+    },
+    {
+        "key": "tunisia_cup",
+        "name": "Tunisia Cup",
+        "url": "https://www.ysscores.com/en/championship/76042/Tunisian-Cup",
+        "standings_url": None,
+    },
+    {
+        "key": "premier_league",
+        "name": "Premier League",
+        "url": "https://www.ysscores.com/en/championship/6811/Premier-League",
+        "standings_url": "https://www.ysscores.com/en/championship/6811/Premier-League-rank",
+    },
+    {
+        "key": "uefa_champions_league",
+        "name": "UEFA Champions League",
+        "url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League",
+        "standings_url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League-rank",
+    },
+    {
+        "key": "caf_champions_league",
+        "name": "CAF Champions League",
+        "url": "https://www.ysscores.com/en/championship/77783/CAF-Champions-League",
+        "standings_url": "https://www.ysscores.com/en/championship/77783/CAF-Champions-League-rank",
+    },
 ]
 
-def clean_text(text: str) -> str:
-    text = text.strip()
-    if len(text) < 2 or text in ["Pen", "pen", "FT", "AET", "PEN", "1", "2", "3", "4"]:
-        return "N/A"
-    if re.search(r'^\d+$', text):
-        return "N/A"
-    return text
+# ---------------------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------------------
+def classify_status(result_text: str, css_classes: str) -> str:
+    t = result_text.strip()
+    c = css_classes.lower()
+    if "'" in t or "live" in c or "active-match" in c:
+        return "live"
+    if re.search(r'^\d+\s*-\s*\d+$', t):
+        return "result"
+    return "fixture"
 
-async def scrape_matches(page, doc_name: str):
-    print(f"   ⏳ Loading matches for {doc_name}...")
-    await page.goto(LEAGUES[0]["url"] if "tunisia" in doc_name else "https://www.flashscore.com/", wait_until="domcontentloaded", timeout=90000)
-    await asyncio.sleep(10)
+
+def parse_score(result_text: str) -> str:
+    m = re.search(r'(\d+)\s*-\s*(\d+)', result_text.strip())
+    return f"{m.group(1)} - {m.group(2)}" if m else "-- - --"
+
+
+def parse_time(result_text: str) -> str:
+    m = re.search(r'\d{1,2}:\d{2}', result_text)
+    return m.group(0) if m else result_text.strip()
+
+
+def save_to_firestore(doc_id: str, data: dict) -> None:
+    db.collection('test').document(doc_id).set(data)
+
+
+# ---------------------------------------------------------------------------
+# MATCH SCRAPER
+# ---------------------------------------------------------------------------
+async def scrape_matches(page, league: dict) -> None:
+    doc_name = league["key"]
+    print(f"   ⏳ Matches → {league['name']} ...")
+
+    await page.goto(league["url"], wait_until="domcontentloaded", timeout=60000)
+    await asyncio.sleep(6)
 
     os.makedirs("debug", exist_ok=True)
     await page.screenshot(path=f"debug/{doc_name}_matches.png")
     with open(f"debug/{doc_name}_matches.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
-    print(f"📸 Debug saved for {doc_name} matches")
 
-    matches = await page.query_selector_all('.event__match, div.match, .match-row, [class*="match"], .event')
+    elements = await page.query_selector_all("a.ajax-match-item")
+    print(f"   Found {len(elements)} match elements")
+
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
     results_data: List[Dict] = []
 
-    for match in matches:
+    for el in elements:
         try:
-            # Strongest home/away selectors (from all your debug files)
-            home_elem = await match.query_selector('.event__participant--home, .home-team, .team-home, .team-name')
-            away_elem = await match.query_selector('.event__participant--away, .away-team, .team-away, .team-name')
-            home = clean_text(await home_elem.inner_text() if home_elem else "N/A")
-            away = clean_text(await away_elem.inner_text() if away_elem else "N/A")
+            home = (await el.get_attribute("home_name") or "").strip()
+            away = (await el.get_attribute("away_name") or "").strip()
 
-            if home == "N/A" or away == "N/A":
-                names = await match.query_selector_all('.team-name, .event__participantName')
-                if len(names) >= 2:
-                    home = clean_text(await names[0].inner_text())
-                    away = clean_text(await names[1].inner_text())
+            if not home or not away:
+                home_el = await el.query_selector("div.first-team div.team---item b")
+                away_el = await el.query_selector("div.second-team div.team---item b")
+                home = (await home_el.inner_text()).strip() if home_el else ""
+                away = (await away_el.inner_text()).strip() if away_el else ""
 
-            score_elems = await match.query_selector_all('.event__score, .score, .result')
-            score = f"{await score_elems[0].inner_text()} - {await score_elems[1].inner_text()}" if len(score_elems) >= 2 else "-- - --"
+            if not home or not away:
+                continue
 
-            time_elem = await match.query_selector('.event
+            css_classes = (await el.get_attribute("class") or "")
+            match_id    = (await el.get_attribute("match_id") or "").strip()
+            href        = (await el.get_attribute("href") or "").strip()
+
+            result_el   = await el.query_selector("div.result-wrap")
+            result_text = (await result_el.inner_text()).strip() if result_el else ""
+
+            status = classify_status(result_text, css_classes)
+            score  = parse_score(result_text) if status in ("live", "result") else "-- - --"
+            time   = parse_time(result_text)  if status == "fixture" else result_text.strip()
+
+            match_dict = {
+                "home":     home,
+                "away":     away,
+                "score":    score,
+                "time":     time,
+                "status":   status,
+                "match_id": match_id,
+                "url":      href,
+            }
+
+            if status == "live":
+                live_data.append(match_dict)
+            elif status == "result":
+                results_data.append(match_dict)
+            else:
+                fixtures_data.append(match_dict)
+
+        except Exception as e:
+            print(f"   ⚠️ Skipped match: {e}")
+            continue
+
+    for category, data in [
+        ("live",     live_data),
+        ("fixtures", fixtures_data),
+        ("results",  results_data),
+    ]:
+        doc_id = f"flashscore_{doc_name}_{category}"
+        if data:
+            save_to_firestore(doc_id, {
+                "matches":   data,
+                "count":     len(data),
+                "timestamp": firestore.SERVER_TIMESTAMP,
+            })
+            print(f"   ✅ {len(data):>3} {category.upper():8} → {doc_id}")
+        else:
+            print(f"   ℹ️  No {category} matches")
+
+
+# ---------------------------------------------------------------------------
+# STANDINGS SCRAPER
+# ---------------------------------------------------------------------------
+async def scrape_standings(page, league: dict) -> None:
+    if not league.get("standings_url"):
+        print(f"   ⏭️  No standings for {league['name']}")
+        return
+
+    doc_name = league["key"]
+    print(f"   ⏳ Standings → {league['name']} ...")
+
+    await page.goto(league["standings_url"], wait_until="domcontentloaded", timeout=60000)
+    await asyncio.sleep(6)
+
+    os.makedirs("debug", exist_ok=True)
+    await page.screenshot(path=f"debug/{doc_name}_standings.png")
+    with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+
+    rows = await page.query_selector_all(
+        ".rank-table tr, table.ranking-table tr, .standings-table tr, table tr"
+    )
+
+    table: List[Dict] = []
+    for row in rows:
+        cells = await row.query_selector_all("td")
+        if len(cells) < 8:
+            continue
+        texts = [(await c.inner_text()).strip() for c in cells]
+        if not re.match(r'^\d+\.?$', texts[0]):
+            continue
+        table.append({
+            "position": texts[0].rstrip("."),
+            "team":     texts[1],
+            "played":   texts[2],
+            "wins":     texts[3],
+            "draws":    texts[4],
+            "losses":   texts[5],
+            "goals":    texts[6],
+            "points":   texts[7],
+        })
+
+    doc_id = f"flashscore_{doc_name}_standings"
+    if table:
+        save_to_firestore(doc_id, {
+            "table":     table,
+            "count":     len(table),
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        })
+        print(f"   ✅ {len(table):>3} rows STANDINGS → {doc_id}")
+    else:
+        print(f"   ⚠️  No standings rows — inspect debug/{doc_name}_standings.html")
+
+
+# ---------------------------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------------------------
+async def main() -> None:
+    async with Stealth().use_async(async_playwright()) as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/133.0.0.0 Safari/537.36"
+            ),
+            extra_http_headers={"Referer": "https://www.ysscores.com/"},
+        )
+        page = await context.new_page()
+
+        for league in LEAGUES:
+            print(f"\n🔄 {league['name']}")
+            try:
+                await scrape_matches(page, league)
+                await scrape_standings(page, league)
+                await asyncio.sleep(3)
+            except Exception as e:
+                print(f"   ❌ Fatal error on {league['name']}: {e}")
+                continue
+
+        await browser.close()
+
+    print("\n🎉 Done — check Firestore 'test' collection")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
