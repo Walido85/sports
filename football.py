@@ -96,13 +96,26 @@ LEAGUES = [
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
-def classify_status(result_text: str, css_classes: str) -> str:
+def classify_status(result_text: str, css_classes: str, element_html: str = "") -> str:
+    """Classify match status with improved live detection."""
     t = result_text.strip()
     c = css_classes.lower()
-    if "'" in t or "live" in c or "active-match" in c:
+    h = element_html.lower()
+    
+    if "'" in t and re.search(r"\d+\s*'", t):
         return "live"
+    if "live" in c or "active-match" in c or "live-match" in c:
+        return "live"
+    if "live" in h or "active" in h:
+        return "live"
+    if re.search(r"half|second half|first half|minute", t.lower()):
+        return "live"
+    
     if re.search(r'^\d+\s*-\s*\d+$', t):
         return "result"
+    if "ft" in t.lower() or "ended" in t.lower() or "final" in t.lower():
+        return "result"
+    
     return "fixture"
 
 
@@ -114,6 +127,30 @@ def parse_score(result_text: str) -> str:
 def parse_time(result_text: str) -> str:
     m = re.search(r'\d{1,2}:\d{2}', result_text)
     return m.group(0) if m else result_text.strip()
+
+
+def extract_date_from_text(text: str) -> str:
+    """Extract date from text like 'Today', 'Tomorrow', 'Mon 20 Apr' etc."""
+    text = text.lower().strip()
+    
+    # Match patterns like "Mon 20 Apr", "20 Apr", "20/04", "20-04-2026"
+    patterns = [
+        r'(\w+\s+\d{1,2}\s+\w+)',  # "Mon 20 Apr"
+        r'(\d{1,2}\s+\w+)',  # "20 Apr"
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',  # "20/04/2026"
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    
+    if "today" in text:
+        return datetime.now().strftime("%d %b")
+    if "tomorrow" in text:
+        return (datetime.now() + timedelta(days=1)).strftime("%d %b")
+    
+    return ""
 
 
 def save(doc_id: str, data: dict, retention_days: int = 30) -> None:
@@ -229,6 +266,11 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
             css_classes = (await el.get_attribute("class") or "")
             match_id    = (await el.get_attribute("match_id") or "").strip()
             href        = (await el.get_attribute("href") or "").strip()
+            element_html = (await el.outer_html()).strip()
+            all_element_text = (await el.inner_text()).strip()
+
+            # EXTRACT DATE
+            date = extract_date_from_text(all_element_text)
 
             result_text = ""
             
@@ -237,22 +279,24 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
                 result_text = (await result_el.inner_text()).strip()
             
             if not result_text:
-                score_el = await el.query_selector("span.score, div.score, span.result")
+                score_el = await el.query_selector("span.score, div.score, span.result, div.result")
                 if score_el:
                     result_text = (await score_el.inner_text()).strip()
             
             if not result_text:
-                event_el = await el.query_selector("div.event-info, div.match-info")
+                event_el = await el.query_selector("div.event-info, div.match-info, div.match-score")
                 if event_el:
                     result_text = (await event_el.inner_text()).strip()
             
             if not result_text:
-                all_text = (await el.inner_text()).strip()
-                score_match = re.search(r'(\d+)\s*-\s*(\d+)', all_text)
+                score_match = re.search(r'(\d+)\s*-\s*(\d+)', all_element_text)
                 if score_match:
                     result_text = f"{score_match.group(1)} - {score_match.group(2)}"
+                
+                if not result_text and re.search(r'\d+\s*[\':]', all_element_text):
+                    result_text = all_element_text.split('\n')[0]
 
-            status = classify_status(result_text, css_classes)
+            status = classify_status(result_text, css_classes, element_html)
             score  = parse_score(result_text) if status in ("live", "result") else "-- - --"
 
             if status == "fixture":
@@ -268,6 +312,7 @@ async def extract_matches(elements, league_logo="", include_live_details=False) 
                 "home_logo":  home_logo,
                 "away_logo":  away_logo,
                 "league_logo": league_logo,
+                "date":       date,
                 "score":      score,
                 "time":       time,
                 "status":     status,
