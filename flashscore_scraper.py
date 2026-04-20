@@ -31,7 +31,7 @@ def clean_team(text: str) -> str:
         return "N/A"
     return text
 
-async def scrape_matches(page, league_key: str):
+async def scrape_matches(page, db, league_key: str):
     await page.wait_for_timeout(12000)
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     
@@ -62,7 +62,6 @@ async def scrape_matches(page, league_key: str):
         }
         data["matches"].append(match_dict)
     
-    db = firestore.Client()
     doc_ref = db.collection(COLLECTION).document(f"flashscore_{league_key}_fixtures")
     doc_ref.set(data)
     print(f"✅ Saved {len(data['matches'])} matches → flashscore_{league_key}_fixtures")
@@ -72,8 +71,10 @@ async def scrape_matches(page, league_key: str):
     await page.screenshot(path=f"debug/debug_{league_key}_matches.png")
 
 async def main():
+    # Load credentials once
     creds = json.loads(os.environ["FIREBASE_CREDENTIALS"])
     credentials = service_account.Credentials.from_service_account_info(creds)
+    db = firestore.Client(credentials=credentials)
     
     async with Stealth().use_async(async_playwright()) as playwright:
         browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -82,10 +83,10 @@ async def main():
         for league in LEAGUES:
             print(f"Processing {league['name']}...")
             await page.goto(league["url"], wait_until="networkidle")
-            await scrape_matches(page, league["key"])
+            await scrape_matches(page, db, league["key"])
         
         await browser.close()
-    print("✅ Run completed - check GitHub Artifacts for debug files")
+    print("✅ Run completed")
 
 if __name__ == "__main__":
     asyncio.run(main())
