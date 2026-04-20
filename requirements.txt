@@ -6,3 +6,6 @@ playwright
 playwright-stealth
 google-cloud-firestore
 google-auth
+playwright-stealth==2.0.3
+google-cloud-firestore
+google-auth
