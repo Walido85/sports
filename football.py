@@ -175,26 +175,66 @@ def save(doc_id: str, data: dict, keep_history: bool = False, retention_days: in
     history_ref.set({"history": history})
 
 
+async def extract_live_score_and_minute(el) -> dict:
+    """
+    FIXED: Live matches on ysscores DO NOT use div.result-wrap.
+    Their markup is:
+        <div class="first-team-result team-result">0</div>    ← home score
+        <div class="active-match-progress">
+            <span class="live-match-status">Second Half</span> ← phase label
+            <div class="match-inner-progress-wrap" data-minutes="56"> ← minute
+        </div>
+        <div class="second-team-result team-result">0</div>   ← away score
+
+    Previously extract_live_details only looked at div.result-wrap, so live
+    matches came through as score="-- - --", minute="", time="", status="live".
+    """
+    info = {
+        "home_score": "",
+        "away_score": "",
+        "minute": "",
+        "live_status": "",
+    }
+    try:
+        h = await el.query_selector("div.first-team-result")
+        a = await el.query_selector("div.second-team-result")
+        if h:
+            info["home_score"] = (await h.inner_text()).strip()
+        if a:
+            info["away_score"] = (await a.inner_text()).strip()
+
+        minute_wrap = await el.query_selector("div.match-inner-progress-wrap")
+        if minute_wrap:
+            mins = (await minute_wrap.get_attribute("data-minutes") or "").strip()
+            if mins and mins.isdigit():
+                info["minute"] = f"{mins}'"
+
+        status_el = await el.query_selector("span.live-match-status")
+        if status_el:
+            info["live_status"] = (await status_el.inner_text()).strip()
+    except Exception:
+        pass
+
+    return info
+
+
 async def extract_live_details(el) -> dict:
-    """Extract live match details."""
+    """Richer live-match payload (score/minute/status + placeholders for
+    scorers/cards/possession which aren't present in the list view)."""
     details = {
         "minute": "",
+        "live_status": "",
         "scorers_home": [],
         "scorers_away": [],
         "cards": [],
         "possession": {},
     }
-
     try:
-        result_el = await el.query_selector("div.result-wrap")
-        if result_el:
-            result_text = (await result_el.inner_text()).strip()
-            minute_match = re.search(r"(\d+)'", result_text)
-            if minute_match:
-                details["minute"] = f"{minute_match.group(1)}'"
-    except:
+        live = await extract_live_score_and_minute(el)
+        details["minute"] = live["minute"]
+        details["live_status"] = live["live_status"]
+    except Exception:
         pass
-
     return details
 
 
@@ -243,6 +283,7 @@ async def extract_matches(
     league_logo: str = "",
     include_live_details: bool = False,
     date_map: dict = None,
+    default_date: str = "",
 ) -> tuple:
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
@@ -276,16 +317,19 @@ async def extract_matches(
             match_id    = (await el.get_attribute("match_id") or "").strip()
             href        = (await el.get_attribute("href") or "").strip()
 
-            # FIXED: pick up date + round from the matches-week-title header that
-            # precedes this match in the DOM (built in get_match_date_map).
+            # Date + round from the matches-week-title header that precedes this
+            # match in the DOM (built in get_match_date_map). Fall back to the
+            # caller-provided default_date (e.g. today's date for the live page).
             date = ""
             round_name = ""
             if match_id and match_id in date_map:
                 date = date_map[match_id].get("date", "") or ""
                 round_name = date_map[match_id].get("round", "") or ""
+            if not date:
+                date = default_date
 
+            # Read result-wrap (used by fixtures + finished results).
             result_text = ""
-
             result_el = await el.query_selector("div.result-wrap")
             if result_el:
                 result_text = (await result_el.inner_text()).strip()
@@ -300,13 +344,33 @@ async def extract_matches(
                 if event_el:
                     result_text = (await event_el.inner_text()).strip()
 
-            status = classify_status(result_text, css_classes)
-            score  = parse_score(result_text) if status in ("live", "result") else "-- - --"
+            # Live matches don't use result-wrap — read live-specific DOM.
+            live_info = None
+            is_live_by_class = ("live-match" in css_classes.lower()
+                                or "active-match" in css_classes.lower())
+            if is_live_by_class:
+                live_info = await extract_live_score_and_minute(el)
 
+            status = classify_status(result_text, css_classes)
+
+            # Score
+            if status == "live" and live_info and live_info["home_score"] and live_info["away_score"]:
+                score = f'{live_info["home_score"]} - {live_info["away_score"]}'
+            elif status in ("live", "result"):
+                score = parse_score(result_text)
+            else:
+                score = "-- - --"
+
+            # Time / phase label
             if status == "fixture":
                 time = parse_time(result_text)
             elif status == "live":
-                time = result_text.strip()
+                if live_info and live_info["minute"]:
+                    time = live_info["minute"]            # e.g. "56'"
+                elif live_info and live_info["live_status"]:
+                    time = live_info["live_status"]       # e.g. "Second Half"
+                else:
+                    time = result_text.strip()
             else:
                 time = "FT"
 
@@ -361,6 +425,10 @@ async def scrape_live(page) -> None:
         f.write(await page.content())
 
     date_map = await get_match_date_map(page)
+    # today_matches has no matches-week-title headers — all matches are today.
+    # Use today's date (same format the site uses elsewhere) as a fallback so
+    # live matches don't come back with date="".
+    today_date = datetime.utcnow().strftime("%A %d-%m-%Y")
 
     wrappers = await page.query_selector_all("div.matches-wrapper")
     all_live_matches: List[Dict] = []
@@ -384,6 +452,7 @@ async def scrape_live(page) -> None:
             league_logo=league_logo,
             include_live_details=True,
             date_map=date_map,
+            default_date=today_date,
         )
 
         if live:
