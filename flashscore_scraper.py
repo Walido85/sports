@@ -24,7 +24,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
 ]
 
-# === ALL LEAGUES YOU WANTED (best of the best) ===
 LEAGUES = [
     {"key": "tunisia_ligue1",          "name": "Tunisia Ligue 1",          "url": "https://www.flashscore.com/football/tunisia/ligue-professionnelle-1/",          "standings_url": "https://www.flashscore.com/football/tunisia/ligue-professionnelle-1/standings/"},
     {"key": "tunisia_ligue2",          "name": "Tunisia Ligue 2",          "url": "https://www.flashscore.com/football/tunisia/ligue-2/",                      "standings_url": "https://www.flashscore.com/football/tunisia/ligue-2/standings/"},
@@ -35,30 +34,48 @@ LEAGUES = [
 ]
 
 async def scrape_matches(page, doc_name: str):
-    """Scrape Live + Fixtures + Results from one page load (very efficient)"""
     await page.wait_for_selector('.event__match', timeout=30000)
-    matches = await page.query_selector_all('.event__match')
+    await asyncio.sleep(2)  # extra time for JS to render
 
-    live_data = []
-    fixtures_data = []
-    results_data = []
+    matches = await page.query_selector_all('.event__match')
+    live_data: List[Dict] = []
+    fixtures_data: List[Dict] = []
+    results_data: List[Dict] = []
 
     for match in matches:
         try:
-            home = await match.query_selector('.event__participant--home')
-            away = await match.query_selector('.event__participant--away')
+            # === BEST TEAM NAME SELECTORS (2026 structure) ===
+            home_elem = await match.query_selector('.event__participant--home .event__participantName')
+            away_elem = await match.query_selector('.event__participant--away .event__participantName')
             
-            home_text = await home.inner_text() if home else "N/A"
-            away_text = await away.inner_text() if away else "N/A"
+            # Fallback 1
+            if not home_elem or not away_elem:
+                participants = await match.query_selector_all('.event__participantName')
+                if len(participants) >= 2:
+                    home_elem = participants[0]
+                    away_elem = participants[1]
+            
+            # Fallback 2 (very broad)
+            if not home_elem or not away_elem:
+                all_text = await match.inner_text()
+                lines = [line.strip() for line in all_text.split('\n') if line.strip()]
+                if len(lines) >= 3:
+                    home_text = lines[0]
+                    away_text = lines[2]
+                else:
+                    home_text = away_text = "N/A"
+            else:
+                home_text = await home_elem.inner_text()
+                away_text = await away_elem.inner_text()
 
-            # Score
+            # === SCORE & TIME ===
             score_elems = await match.query_selector_all('.event__score')
             if len(score_elems) >= 2:
                 score = f"{await score_elems[0].inner_text()} - {await score_elems[1].inner_text()}"
             else:
-                score = "-- - --"
+                score_container = await match.query_selector('.event__scores')
+                score = await score_container.inner_text() if score_container else "-- - --"
 
-            # Time / status
             time_elem = await match.query_selector('.event__time')
             current_minute = await time_elem.inner_text() if time_elem else ""
 
@@ -69,18 +86,18 @@ async def scrape_matches(page, doc_name: str):
                 "current_minute": current_minute.strip()
             }
 
-            # Classify cleanly
-            if "FT" in current_minute or "pen" in current_minute.lower() or ("'" in current_minute and score != "-- - --"):
-                results_data.append(match_dict)          # Finished
+            # Classify
+            if "FT" in current_minute or "pen" in current_minute.lower() or score != "-- - --":
+                results_data.append(match_dict)
             elif "'" in current_minute or "live" in current_minute.lower():
-                live_data.append(match_dict)             # Live
+                live_data.append(match_dict)
             else:
-                fixtures_data.append(match_dict)         # Upcoming
+                fixtures_data.append(match_dict)
 
         except:
             continue
 
-    # Save 3 separate clean documents
+    # Save clean documents
     if live_data:
         db.collection('test').document(f"flashscore_{doc_name}_live").set({"matches": live_data, "timestamp": firestore.SERVER_TIMESTAMP})
         print(f"✅ Saved {len(live_data)} LIVE → test/flashscore_{doc_name}_live")
@@ -91,33 +108,31 @@ async def scrape_matches(page, doc_name: str):
         db.collection('test').document(f"flashscore_{doc_name}_results").set({"matches": results_data, "timestamp": firestore.SERVER_TIMESTAMP})
         print(f"✅ Saved {len(results_data)} RESULTS → test/flashscore_{doc_name}_results")
 
-    return len(live_data) + len(fixtures_data) + len(results_data)
-
 async def scrape_standings(page, doc_name: str):
-    """Scrape standings table"""
-    try:
-        await page.wait_for_selector('.table__row, .standings__row', timeout=15000)
-        rows = await page.query_selector_all('.table__row, .standings__row')
+    await asyncio.sleep(2)
+    rows = await page.query_selector_all('div[class*="table__row"], div[class*="standings__row"], div[class*="row"], .table__row')
+    
+    table = []
+    for row in rows:
+        cells = await row.query_selector_all('div, span')
+        texts = [await c.inner_text() for c in cells]
+        texts = [t.strip() for t in texts if t.strip()]
         
-        table = []
-        for row in rows:
-            cells = await row.query_selector_all('div, span')
-            texts = [await c.inner_text() for c in cells if await c.inner_text()]
-            if len(texts) >= 8 and texts[0].strip().isdigit():
-                table.append({
-                    "position": texts[0].strip(),
-                    "team": texts[1].strip(),
-                    "played": texts[2].strip(),
-                    "wins": texts[3].strip(),
-                    "draws": texts[4].strip(),
-                    "losses": texts[5].strip(),
-                    "goals": texts[6].strip(),
-                    "points": texts[7].strip()
-                })
-        if table:
-            db.collection('test').document(f"flashscore_{doc_name}_standings").set({"table": table, "timestamp": firestore.SERVER_TIMESTAMP})
-            print(f"✅ Saved {len(table)} standings → test/flashscore_{doc_name}_standings")
-    except:
+        if len(texts) >= 8 and texts[0].isdigit():
+            table.append({
+                "position": texts[0],
+                "team": texts[1],
+                "played": texts[2],
+                "wins": texts[3],
+                "draws": texts[4],
+                "losses": texts[5],
+                "goals": texts[6],
+                "points": texts[7]
+            })
+    if table:
+        db.collection('test').document(f"flashscore_{doc_name}_standings").set({"table": table, "timestamp": firestore.SERVER_TIMESTAMP})
+        print(f"✅ Saved {len(table)} STANDINGS → test/flashscore_{doc_name}_standings")
+    else:
         print(f"⚠️ No standings for {doc_name}")
 
 async def main():
@@ -131,12 +146,12 @@ async def main():
             await page.goto(league["url"], wait_until="networkidle", timeout=60000)
             await scrape_matches(page, league["key"])
 
-            if league["standings_url"]:
+            if league.get("standings_url"):
                 await page.goto(league["standings_url"], wait_until="networkidle", timeout=60000)
                 await scrape_standings(page, league["key"])
 
         await browser.close()
-    print("\n🎉 ALL DONE – All data is now clean in Firestore collection 'test'")
+    print("\n🎉 ALL DONE – Clean data ready in Firestore collection 'test'")
 
 if __name__ == "__main__":
     asyncio.run(main())
