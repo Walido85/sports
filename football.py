@@ -127,24 +127,27 @@ def parse_time(result_text: str) -> str:
 
 
 def extract_date_from_text(text: str) -> str:
-    """Extract date from text."""
-    text = text.lower().strip()
+    """Extract date carefully - FIXED VERSION."""
+    text_lower = text.lower().strip()
     
+    # FIXED: Better date patterns
     patterns = [
-        r'(\w+\s+\d{1,2}\s+\w+)',
-        r'(\d{1,2}\s+\w+)',
-        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'\b(mon|tue|wed|thu|fri|sat|sun)\s+(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b',
+        r'\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b',
+        r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b',
     ]
     
     for pattern in patterns:
-        match = re.search(pattern, text)
+        match = re.search(pattern, text_lower)
         if match:
-            return match.group(1)
+            return match.group(0)
     
-    if "today" in text:
-        return datetime.now().strftime("%d %b")
-    if "tomorrow" in text:
-        return (datetime.now() + timedelta(days=1)).strftime("%d %b")
+    if "today" in text_lower:
+        return "Today"
+    if "tomorrow" in text_lower:
+        return "Tomorrow"
+    if "yesterday" in text_lower:
+        return "Yesterday"
     
     return ""
 
@@ -155,7 +158,6 @@ def save(doc_id: str, data: dict, keep_history: bool = False, retention_days: in
     
     db.collection('football').document(doc_id).set(data)
     
-    # ONLY KEEP HISTORY FOR RESULTS
     if not keep_history:
         return
     
@@ -454,7 +456,7 @@ async def scrape_results(page, league: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# STANDINGS
+# STANDINGS - COMPLETELY REWRITTEN
 # ---------------------------------------------------------------------------
 async def scrape_standings(page, league: dict) -> None:
     standings_url = league.get("standings_url")
@@ -474,17 +476,25 @@ async def scrape_standings(page, league: dict) -> None:
     with open(f"debug/{league_name}_standings.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
+    # Get ALL rows (don't filter yet)
     all_rows = await page.query_selector_all("div.rank-row")
     
-    has_groups = False
+    if not all_rows:
+        print(f"   ⚠️  No standings rows")
+        return
+    
+    # DETECT GROUPS - look for actual "Group A", "Group B" text patterns
+    group_rows = []
     for row in all_rows:
-        row_text = (await row.inner_text()).strip().lower()
-        if re.match(r'^group\s+[a-z]', row_text) or "group" in row_text and "team" not in row_text:
-            has_groups = True
-            break
+        row_text = (await row.inner_text()).strip()
+        # Match: "Group A", "Group B", etc - but NOT team rows
+        if re.match(r'^group\s+[a-z]\s*$', row_text.lower()) and not await row.query_selector("div.rank-col.number"):
+            group_rows.append(row)
+    
+    has_groups = len(group_rows) >= 2
     
     if has_groups:
-        print(f"      📊 Grouped standings detected")
+        print(f"      📊 {len(group_rows)} groups detected")
         groups = []
         current_group = None
         current_teams = []
@@ -492,67 +502,69 @@ async def scrape_standings(page, league: dict) -> None:
         for row in all_rows:
             row_text = (await row.inner_text()).strip()
             
-            if re.match(r'^group\s+[a-z]|^[a-z]+\s+\d+', row_text.lower()) and not await row.query_selector("div.rank-col.number"):
+            # Check if GROUP HEADER
+            if re.match(r'^group\s+[a-z]\s*$', row_text.lower()) and not await row.query_selector("div.rank-col.number"):
+                # Save previous group
                 if current_group and current_teams:
                     groups.append({
                         "group": current_group,
                         "teams": current_teams,
                         "count": len(current_teams)
                     })
-                current_group = row_text.split('\n')[0] if '\n' in row_text else row_text
+                current_group = row_text.strip()
                 current_teams = []
                 continue
             
-            if await row.query_selector("div.rank-col.header"):
+            # Skip non-team rows
+            if not await row.query_selector("div.rank-col.number"):
                 continue
             
-            name_check = await row.query_selector("div.rank-col.name")
-            if name_check:
-                check_text = (await name_check.inner_text()).strip().lower()
-                if "players" in check_text:
-                    break
-            
+            # TEAM ROW - extract data
             pos_el = await row.query_selector("div.rank-col.number")
             position = (await pos_el.inner_text()).strip() if pos_el else ""
             
-            if position and position.isdigit():
-                name_div = await row.query_selector("div.rank-col.name div.team-name")
-                team = ""
-                team_logo = ""
+            if not position.isdigit():
+                continue
+            
+            # Extract team
+            name_div = await row.query_selector("div.rank-col.name div.team-name")
+            team = ""
+            team_logo = ""
+            
+            if name_div:
+                img = await name_div.query_selector("img")
+                if img:
+                    team_logo = (await img.get_attribute("src") or "").strip()
+                info_div = await name_div.query_selector("div.info")
+                team = (await info_div.inner_text()).strip() if info_div else ""
+            
+            if not team:
+                name_div = await row.query_selector("div.rank-col.name")
+                team = (await name_div.inner_text()).strip() if name_div else ""
+            
+            if team and current_group:
+                played_el = await row.query_selector("div.rank-col.played")
+                win_el = await row.query_selector("div.rank-col.win")
+                equal_el = await row.query_selector("div.rank-col.equal")
+                lose_el = await row.query_selector("div.rank-col.lose")
+                goals_el = await row.query_selector("div.rank-col.goals")
+                diff_el = await row.query_selector("div.rank-col.diff")
+                points_el = await row.query_selector("div.rank-col.points")
                 
-                if name_div:
-                    img = await name_div.query_selector("img")
-                    if img:
-                        team_logo = (await img.get_attribute("src") or "").strip()
-                    info_div = await name_div.query_selector("div.info")
-                    team = (await info_div.inner_text()).strip() if info_div else ""
-                
-                if not team:
-                    name_div = await row.query_selector("div.rank-col.name")
-                    team = (await name_div.inner_text()).strip() if name_div else ""
-                
-                if team and current_group:
-                    played_el = await row.query_selector("div.rank-col.played")
-                    win_el = await row.query_selector("div.rank-col.win")
-                    equal_el = await row.query_selector("div.rank-col.equal")
-                    lose_el = await row.query_selector("div.rank-col.lose")
-                    goals_el = await row.query_selector("div.rank-col.goals")
-                    diff_el = await row.query_selector("div.rank-col.diff")
-                    points_el = await row.query_selector("div.rank-col.points")
-                    
-                    current_teams.append({
-                        "position":  position,
-                        "team":      team,
-                        "team_logo": team_logo,
-                        "played":    (await played_el.inner_text()).strip() if played_el else "",
-                        "wins":      (await win_el.inner_text()).strip() if win_el else "",
-                        "draws":     (await equal_el.inner_text()).strip() if equal_el else "",
-                        "losses":    (await lose_el.inner_text()).strip() if lose_el else "",
-                        "goals":     (await goals_el.inner_text()).strip() if goals_el else "",
-                        "diff":      (await diff_el.inner_text()).strip() if diff_el else "",
-                        "points":    (await points_el.inner_text()).strip() if points_el else "",
-                    })
+                current_teams.append({
+                    "position":  position,
+                    "team":      team,
+                    "team_logo": team_logo,
+                    "played":    (await played_el.inner_text()).strip() if played_el else "",
+                    "wins":      (await win_el.inner_text()).strip() if win_el else "",
+                    "draws":     (await equal_el.inner_text()).strip() if equal_el else "",
+                    "losses":    (await lose_el.inner_text()).strip() if lose_el else "",
+                    "goals":     (await goals_el.inner_text()).strip() if goals_el else "",
+                    "diff":      (await diff_el.inner_text()).strip() if diff_el else "",
+                    "points":    (await points_el.inner_text()).strip() if points_el else "",
+                })
         
+        # Save last group
         if current_group and current_teams:
             groups.append({
                 "group": current_group,
@@ -568,29 +580,29 @@ async def scrape_standings(page, league: dict) -> None:
                 "groups": groups,
                 "total_groups": len(groups),
             }, keep_history=False)
-            print(f"   ✅ {len(groups)} groups with {sum(g['count'] for g in groups)} teams")
+            total_teams = sum(g['count'] for g in groups)
+            print(f"   ✅ {len(groups)} groups, {total_teams} teams")
     
     else:
+        # SINGLE TABLE
+        print(f"      📊 Single table (no groups)")
         table = []
         max_teams = 30
         
         for row in all_rows:
             try:
+                # Skip header rows
                 if await row.query_selector("div.rank-col.header"):
                     continue
                 
-                name_check = await row.query_selector("div.rank-col.name")
-                if name_check:
-                    check_text = (await name_check.inner_text()).strip().lower()
-                    if "players" in check_text:
-                        break
-                
+                # Must have position
                 pos_el = await row.query_selector("div.rank-col.number")
                 position = (await pos_el.inner_text()).strip() if pos_el else ""
                 
                 if not position or not position.isdigit():
                     continue
                 
+                # Extract team
                 name_div = await row.query_selector("div.rank-col.name div.team-name")
                 team = ""
                 team_logo = ""
@@ -605,7 +617,7 @@ async def scrape_standings(page, league: dict) -> None:
                     name_div = await row.query_selector("div.rank-col.name")
                     team = (await name_div.inner_text()).strip() if name_div else ""
                 
-                if not team:
+                if not team or "player" in team.lower():
                     continue
                 
                 played_el = await row.query_selector("div.rank-col.played")
