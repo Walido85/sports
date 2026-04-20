@@ -71,10 +71,9 @@ async def scrape_matches(page, db, league_key: str):
     await page.screenshot(path=f"debug/debug_{league_key}_matches.png")
 
 async def main():
-    # Load credentials once
     creds = json.loads(os.environ["FIREBASE_CREDENTIALS"])
     credentials = service_account.Credentials.from_service_account_info(creds)
-    db = firestore.Client(credentials=credentials)
+    db = firestore.Client(credentials=credentials, database="walid")   # ← FIXED HERE
     
     async with Stealth().use_async(async_playwright()) as playwright:
         browser = await playwright.chromium.launch(headless=True, args=["--no-sandbox"])
