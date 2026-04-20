@@ -45,15 +45,12 @@ async def scrape_matches(page, doc_name: str):
     await page.wait_for_selector('.event__match', timeout=30000)
     await asyncio.sleep(4)
 
-    # === DEBUG FILES (guaranteed save) ===
-    try:
-        os.makedirs("debug", exist_ok=True)
-        await page.screenshot(path=f"debug/{doc_name}_matches.png")
-        with open(f"debug/{doc_name}_matches.html", "w", encoding="utf-8") as f:
-            f.write(await page.content())
-        print(f"📸 Debug files saved: debug/{doc_name}_matches.png + .html")
-    except Exception as e:
-        print(f"Debug save failed: {e}")
+    # Debug
+    os.makedirs("debug", exist_ok=True)
+    await page.screenshot(path=f"debug/{doc_name}_matches.png")
+    with open(f"debug/{doc_name}_matches.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+    print(f"📸 Debug saved for {doc_name} matches")
 
     matches = await page.query_selector_all('.event__match')
     live_data: List[Dict] = []
@@ -128,23 +125,20 @@ async def scrape_matches(page, doc_name: str):
 async def scrape_standings(page, doc_name: str):
     await asyncio.sleep(3)
 
-    try:
-        os.makedirs("debug", exist_ok=True)
-        await page.screenshot(path=f"debug/{doc_name}_standings.png")
-        with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
-            f.write(await page.content())
-        print(f"📸 Debug files saved: debug/{doc_name}_standings.png + .html")
-    except Exception as e:
-        print(f"Debug save failed: {e}")
+    os.makedirs("debug", exist_ok=True)
+    await page.screenshot(path=f"debug/{doc_name}_standings.png")
+    with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+    print(f"📸 Debug saved for {doc_name} standings")
 
-    rows = await page.query_selector_all('tr.table__row, .table__row')
+    rows = await page.query_selector_all('tr.table__row')
 
     table = []
     for row in rows:
         cells = await row.query_selector_all('td, div, span')
         texts = [await c.inner_text() for c in cells]
         texts = [t.strip() for t in texts if t.strip()]
-        if len(texts) >= 8 and (texts[0].replace('.', '').strip().isdigit() or texts[0].strip().isdigit()):
+        if len(texts) >= 8 and texts[0].replace('.', '').strip().isdigit():
             table.append({
                 "position": texts[0],
                 "team": texts[1],
@@ -157,7 +151,7 @@ async def scrape_standings(page, doc_name: str):
             })
     if table:
         db.collection('test').document(f"flashscore_{doc_name}_standings").set({"table": table, "timestamp": firestore.SERVER_TIMESTAMP})
-        print(f"✅ Saved {len(table)} STANDINGS → test/flashscore_{doc_name}_standings")
+        print(f"✅ Saved {len(table)} STANDINGS")
     else:
         print(f"⚠️ No standings for {doc_name}")
 
@@ -177,7 +171,7 @@ async def main():
                 await scrape_standings(page, league["key"])
 
         await browser.close()
-    print("\n🎉 Run completed – debug files are now in a 'debug' folder")
+    print("\n🎉 Run completed")
 
 if __name__ == "__main__":
     asyncio.run(main())
