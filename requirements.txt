@@ -2,3 +2,7 @@ requests
 beautifulsoup4
 google-cloud-firestore
 firebase-admin>=6.0.0
+playwright
+playwright-stealth
+google-cloud-firestore
+google-auth
