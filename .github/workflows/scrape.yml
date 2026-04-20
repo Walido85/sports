@@ -1,4 +1,4 @@
-name: Kawarji Scraper (Sports + Finance + Weather + Pharmacies)
+name: Kawarji Scraper (Sports + Finance + Weather + Pharmacies + Flashscore)
 
 on:
   schedule:
@@ -19,7 +19,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install Requirements
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
 
       - name: Run Sports Scraper
         env:
@@ -40,6 +42,21 @@ jobs:
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python pharmacies_scraper.py
+
+      - name: Run Flashscore Scraper
+        env:
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+        run: python flashscore_scraper.py
+
+      - name: Upload debug files (screenshot + HTML) if any
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flashscore-debug-files
+          path: |
+            debug_*.png
+            debug_*_source.html
+          retention-days: 7
 
       - name: Show Summary
         run: echo "🎉 All scrapers completed successfully!"
