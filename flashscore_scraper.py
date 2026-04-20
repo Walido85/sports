@@ -45,6 +45,12 @@ async def scrape_matches(page, doc_name: str):
     await page.wait_for_selector('.event__match', timeout=30000)
     await asyncio.sleep(4)
 
+    # Debug files for verification
+    await page.screenshot(path=f"debug_{doc_name}_matches.png")
+    with open(f"debug_{doc_name}_matches.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+    print(f"📸 Debug files saved for {doc_name} (matches)")
+
     matches = await page.query_selector_all('.event__match')
     live_data: List[Dict] = []
     fixtures_data: List[Dict] = []
@@ -54,7 +60,7 @@ async def scrape_matches(page, doc_name: str):
         try:
             home_text = away_text = "N/A"
 
-            # Primary selector
+            # Primary
             home_elem = await match.query_selector('.event__participant--home')
             away_elem = await match.query_selector('.event__participant--away')
             if home_elem:
@@ -77,9 +83,11 @@ async def scrape_matches(page, doc_name: str):
                     home_text = await names[0].inner_text()
                     away_text = await names[1].inner_text()
 
+            # Score
             score_elems = await match.query_selector_all('.event__score')
             score = f"{await score_elems[0].inner_text()} - {await score_elems[1].inner_text()}" if len(score_elems) >= 2 else "-- - --"
 
+            # Date + Time + Status
             time_elem = await match.query_selector('.event__time')
             raw = await time_elem.inner_text() if time_elem else ""
             date_match = re.search(r'(\d{2}\.\d{2}\.)', raw)
@@ -120,32 +128,30 @@ async def scrape_matches(page, doc_name: str):
 async def scrape_standings(page, doc_name: str):
     await asyncio.sleep(3)
 
-    rows = await page.query_selector_all('tr.table__row')
+    # Debug for standings
+    await page.screenshot(path=f"debug_{doc_name}_standings.png")
+    with open(f"debug_{doc_name}_standings.html", "w", encoding="utf-8") as f:
+        f.write(await page.content())
+    print(f"📸 Debug files saved for {doc_name} (standings)")
+
+    rows = await page.query_selector_all('tr.table__row, .table__row')
 
     table = []
     for row in rows:
-        # Use specific column selectors (confirmed from your Flashscore screenshots)
-        position_elem = await row.query_selector('.table__cell--rank')
-        team_elem = await row.query_selector('.table__cell--participant')
-        played_elem = await row.query_selector('.table__cell--matchesPlayed')
-        wins_elem = await row.query_selector('.table__cell--wins')
-        draws_elem = await row.query_selector('.table__cell--draws')
-        losses_elem = await row.query_selector('.table__cell--losses')
-        goals_elem = await row.query_selector('.table__cell--goals')
-        points_elem = await row.query_selector('.table__cell--points')
-
-        if position_elem and team_elem:
+        cells = await row.query_selector_all('td, div, span')
+        texts = [await c.inner_text() for c in cells]
+        texts = [t.strip() for t in texts if t.strip()]
+        if len(texts) >= 8 and (texts[0].replace('.', '').strip().isdigit() or texts[0].strip().isdigit()):
             table.append({
-                "position": (await position_elem.inner_text()).strip(),
-                "team": (await team_elem.inner_text()).strip(),
-                "played": (await played_elem.inner_text()).strip() if played_elem else "",
-                "wins": (await wins_elem.inner_text()).strip() if wins_elem else "",
-                "draws": (await draws_elem.inner_text()).strip() if draws_elem else "",
-                "losses": (await losses_elem.inner_text()).strip() if losses_elem else "",
-                "goals": (await goals_elem.inner_text()).strip() if goals_elem else "",
-                "points": (await points_elem.inner_text()).strip() if points_elem else ""
+                "position": texts[0],
+                "team": texts[1],
+                "played": texts[2],
+                "wins": texts[3],
+                "draws": texts[4],
+                "losses": texts[5],
+                "goals": texts[6],
+                "points": texts[7]
             })
-
     if table:
         db.collection('test').document(f"flashscore_{doc_name}_standings").set({"table": table, "timestamp": firestore.SERVER_TIMESTAMP})
         print(f"✅ Saved {len(table)} STANDINGS → test/flashscore_{doc_name}_standings")
@@ -168,7 +174,7 @@ async def main():
                 await scrape_standings(page, league["key"])
 
         await browser.close()
-    print("\n🎉 Run completed – standings fields and team names fixed")
+    print("\n🎉 Run completed – check GitHub Artifacts for debug files if needed")
 
 if __name__ == "__main__":
     asyncio.run(main())
