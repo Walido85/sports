@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
+from urllib.parse import quote
 
 # === FIRESTORE ===
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
@@ -41,7 +42,8 @@ LEAGUES = {
 
 def fetch_with_proxy(url):
     time.sleep(1)
-    proxied_url = f"{PROXY_BASE}{url}"
+    # Correct format for your Cloudflare Worker
+    proxied_url = f"{PROXY_BASE}?url={quote(url)}"
     r = requests.get(proxied_url, headers=HEADERS, timeout=20)
     r.raise_for_status()
     return r.json()
