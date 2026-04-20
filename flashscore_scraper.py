@@ -45,11 +45,15 @@ async def scrape_matches(page, doc_name: str):
     await page.wait_for_selector('.event__match', timeout=30000)
     await asyncio.sleep(4)
 
-    # Debug files for verification
-    await page.screenshot(path=f"debug_{doc_name}_matches.png")
-    with open(f"debug_{doc_name}_matches.html", "w", encoding="utf-8") as f:
-        f.write(await page.content())
-    print(f"📸 Debug files saved for {doc_name} (matches)")
+    # === DEBUG FILES (guaranteed save) ===
+    try:
+        os.makedirs("debug", exist_ok=True)
+        await page.screenshot(path=f"debug/{doc_name}_matches.png")
+        with open(f"debug/{doc_name}_matches.html", "w", encoding="utf-8") as f:
+            f.write(await page.content())
+        print(f"📸 Debug files saved: debug/{doc_name}_matches.png + .html")
+    except Exception as e:
+        print(f"Debug save failed: {e}")
 
     matches = await page.query_selector_all('.event__match')
     live_data: List[Dict] = []
@@ -60,7 +64,6 @@ async def scrape_matches(page, doc_name: str):
         try:
             home_text = away_text = "N/A"
 
-            # Primary
             home_elem = await match.query_selector('.event__participant--home')
             away_elem = await match.query_selector('.event__participant--away')
             if home_elem:
@@ -76,18 +79,15 @@ async def scrape_matches(page, doc_name: str):
                         away_text = line.strip()
                         break
 
-            # Fallback
             if not is_valid_team_name(home_text) or not is_valid_team_name(away_text):
                 names = await match.query_selector_all('.event__participantName')
                 if len(names) >= 2:
                     home_text = await names[0].inner_text()
                     away_text = await names[1].inner_text()
 
-            # Score
             score_elems = await match.query_selector_all('.event__score')
             score = f"{await score_elems[0].inner_text()} - {await score_elems[1].inner_text()}" if len(score_elems) >= 2 else "-- - --"
 
-            # Date + Time + Status
             time_elem = await match.query_selector('.event__time')
             raw = await time_elem.inner_text() if time_elem else ""
             date_match = re.search(r'(\d{2}\.\d{2}\.)', raw)
@@ -128,11 +128,14 @@ async def scrape_matches(page, doc_name: str):
 async def scrape_standings(page, doc_name: str):
     await asyncio.sleep(3)
 
-    # Debug for standings
-    await page.screenshot(path=f"debug_{doc_name}_standings.png")
-    with open(f"debug_{doc_name}_standings.html", "w", encoding="utf-8") as f:
-        f.write(await page.content())
-    print(f"📸 Debug files saved for {doc_name} (standings)")
+    try:
+        os.makedirs("debug", exist_ok=True)
+        await page.screenshot(path=f"debug/{doc_name}_standings.png")
+        with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
+            f.write(await page.content())
+        print(f"📸 Debug files saved: debug/{doc_name}_standings.png + .html")
+    except Exception as e:
+        print(f"Debug save failed: {e}")
 
     rows = await page.query_selector_all('tr.table__row, .table__row')
 
@@ -174,7 +177,7 @@ async def main():
                 await scrape_standings(page, league["key"])
 
         await browser.close()
-    print("\n🎉 Run completed – check GitHub Artifacts for debug files if needed")
+    print("\n🎉 Run completed – debug files are now in a 'debug' folder")
 
 if __name__ == "__main__":
     asyncio.run(main())
