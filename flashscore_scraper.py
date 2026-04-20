@@ -127,7 +127,13 @@ async def extract_matches(elements) -> tuple:
 
             status = classify_status(result_text, css_classes)
             score  = parse_score(result_text) if status in ("live", "result") else "-- - --"
-            time   = parse_time(result_text)  if status == "fixture" else result_text.strip()
+
+            if status == "fixture":
+                time = parse_time(result_text)
+            elif status == "live":
+                time = result_text.strip()
+            else:
+                time = "FT"
 
             match_dict = {
                 "home":       home,
@@ -280,7 +286,7 @@ async def scrape_results(page, league: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# STANDINGS
+# STANDINGS — FIXED: div.rank-row structure, not tables
 # ---------------------------------------------------------------------------
 async def scrape_standings(page, league: dict) -> None:
     standings_url = league.get("standings_url")
@@ -299,35 +305,65 @@ async def scrape_standings(page, league: dict) -> None:
     with open(f"debug/{doc_name}_standings.html", "w", encoding="utf-8") as f:
         f.write(await page.content())
 
-    rows = await page.query_selector_all(
-        ".rank-table tr, table.ranking-table tr, .standings-table tr, table tr"
-    )
-
+    # ysscores uses div.rank-row, not tables
+    rows = await page.query_selector_all("div.rank-row:not(.header)")
+    
     table: List[Dict] = []
     for row in rows:
-        cells = await row.query_selector_all("td")
-        if len(cells) < 8:
-            continue
-        texts = [(await c.inner_text()).strip() for c in cells]
-        if not re.match(r'^\d+\.?$', texts[0]):
-            continue
+        try:
+            # Position
+            pos_el = await row.query_selector("div.rank-col.number")
+            position = (await pos_el.inner_text()).strip() if pos_el else ""
+            if not position or not position.isdigit():
+                continue
 
-        team_logo = ""
-        img_el = await row.query_selector("td img")
-        if img_el:
-            team_logo = (await img_el.get_attribute("src") or "").strip()
+            # Team name + logo
+            name_div = await row.query_selector("div.rank-col.name div.team-name")
+            team = ""
+            team_logo = ""
+            if name_div:
+                img = await name_div.query_selector("img")
+                if img:
+                    team_logo = (await img.get_attribute("src") or "").strip()
+                info_div = await name_div.query_selector("div.info")
+                team = (await info_div.inner_text()).strip() if info_div else ""
 
-        table.append({
-            "position":  texts[0].rstrip("."),
-            "team":      texts[1],
-            "team_logo": team_logo,
-            "played":    texts[2],
-            "wins":      texts[3],
-            "draws":     texts[4],
-            "losses":    texts[5],
-            "goals":     texts[6],
-            "points":    texts[7],
-        })
+            if not team:
+                continue
+
+            # Stats
+            played_el = await row.query_selector("div.rank-col.played")
+            win_el = await row.query_selector("div.rank-col.win")
+            equal_el = await row.query_selector("div.rank-col.equal")
+            lose_el = await row.query_selector("div.rank-col.lose")
+            goals_el = await row.query_selector("div.rank-col.goals")
+            diff_el = await row.query_selector("div.rank-col.diff")
+            points_el = await row.query_selector("div.rank-col.points")
+
+            played = (await played_el.inner_text()).strip() if played_el else ""
+            wins = (await win_el.inner_text()).strip() if win_el else ""
+            draws = (await equal_el.inner_text()).strip() if equal_el else ""
+            losses = (await lose_el.inner_text()).strip() if lose_el else ""
+            goals = (await goals_el.inner_text()).strip() if goals_el else ""
+            diff = (await diff_el.inner_text()).strip() if diff_el else ""
+            points = (await points_el.inner_text()).strip() if points_el else ""
+
+            table.append({
+                "position":  position,
+                "team":      team,
+                "team_logo": team_logo,
+                "played":    played,
+                "wins":      wins,
+                "draws":     draws,
+                "losses":    losses,
+                "goals":     goals,
+                "diff":      diff,
+                "points":    points,
+            })
+
+        except Exception as e:
+            print(f"      ⚠️ Skipped row: {e}")
+            continue
 
     doc_id = f"flashscore_{doc_name}_standings"
     if table:
