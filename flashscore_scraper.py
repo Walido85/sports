@@ -17,23 +17,19 @@ credentials = service_account.Credentials.from_service_account_info(cred_dict)
 db = firestore.Client(project='tunisia-radios-d7aa8', credentials=credentials, database='walid')
 print("Firestore connected → collection 'test'")
 
-# === STRONGEST HEADERS (iPhone + full browser simulation) ===
-SESSION = requests.Session()
-SESSION.headers.update({
+# === YOUR PROXY ===
+PROXY_BASE = "https://good.tuniwave.workers.dev/"
+
+# === HEADERS ===
+HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.sofascore.com/",
     "Origin": "https://www.sofascore.com",
-    "Connection": "keep-alive",
     "Cache-Control": "no-cache",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-site",
-})
+}
 
-# === LEAGUE CONFIG ===
 LEAGUES = {
     "tunisia_ligue1": {"tournament_id": 984, "season_id": 63748},
     "tunisia_ligue2": {"tournament_id": 985, "season_id": 63749},
@@ -43,32 +39,24 @@ LEAGUES = {
     "caf_champions_league":  {"tournament_id": 1054, "season_id": 63702},
 }
 
-def fetch_with_retry(url, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            time.sleep(1.5)  # human-like delay
-            r = SESSION.get(url, timeout=20)
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.HTTPError as e:
-            if r.status_code == 403 and attempt < max_retries - 1:
-                print(f"403 detected – retry {attempt+1}/{max_retries}")
-                time.sleep(3)
-                continue
-            raise
-    raise Exception("Max retries exceeded")
+def fetch_with_proxy(url):
+    time.sleep(1)
+    proxied_url = f"{PROXY_BASE}{url}"
+    r = requests.get(proxied_url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    return r.json()
 
 def fetch_live():
     url = "https://api.sofascore.com/api/v1/sport/football/events/live"
-    return fetch_with_retry(url).get("events", [])
+    return fetch_with_proxy(url).get("events", [])
 
 def fetch_standings(tournament_id: int, season_id: int):
     url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/season/{season_id}/standings/total"
-    data = fetch_with_retry(url)
+    data = fetch_with_proxy(url)
     return data.get("standings", [{}])[0].get("rows", [])
 
 def main():
-    print(f"🚀 Starting SofaScore API scraper at {datetime.now()}")
+    print(f"🚀 Starting SofaScore API scraper (via your proxy) at {datetime.now()}")
 
     live_events = fetch_live()
 
@@ -122,7 +110,7 @@ def main():
         else:
             print(f"⚠️ No standings for {key}")
 
-    print("\n🎉 API run completed – check Firestore 'test' collection")
+    print("\n🎉 Run completed via your proxy – check Firestore 'test' collection")
 
 if __name__ == "__main__":
     main()
