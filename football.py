@@ -123,8 +123,28 @@ def parse_score(result_text: str) -> str:
 
 
 def parse_time(result_text: str) -> str:
-    m = re.search(r'\d{1,2}:\d{2}', result_text)
-    return m.group(0) if m else result_text.strip()
+    """
+    FIXED: ysscores returns times like '07:30 am' / '12:30 pm'. The previous
+    regex \\d{1,2}:\\d{2} extracted only the digits and DROPPED the am/pm suffix,
+    so '07:30 pm' (19:30) was rendered as '07:30' — same as '07:30 am'.
+    Convert to unambiguous 24-hour HH:MM.
+    """
+    if not result_text:
+        return ""
+    text = result_text.strip()
+    m = re.search(r'(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)?', text)
+    if not m:
+        return text
+    hour = int(m.group(1))
+    minute = int(m.group(2))
+    suffix = (m.group(3) or "").lower()
+    if suffix == "am":
+        if hour == 12:
+            hour = 0
+    elif suffix == "pm":
+        if hour != 12:
+            hour += 12
+    return f"{hour:02d}:{minute:02d}"
 
 
 def clean_team_name(raw: str) -> str:
