@@ -20,8 +20,8 @@ if not firebase_secret:
 
 cred_dict = json.loads(firebase_secret)
 credentials = service_account.Credentials.from_service_account_info(cred_dict)
-db = firestore.Client(project='tunisia-radios-d7aa8', credentials=credentials, database='walid')
-print("✅ Firestore connected → collection 'default'")
+db = firestore.Client(project='tunisia-radios-d7aa8', credentials=credentials, database='(default)')
+print("✅ Firestore connected → collection '(default)'")
 
 # ---------------------------------------------------------------------------
 # LEAGUES
