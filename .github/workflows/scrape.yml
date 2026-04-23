@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '0 * * * *'  # Runs every 1 hour
     
-  workflow_dispatch:          # Allows manual run from GitHub
+  workflow_dispatch:
 
 jobs:
   scrape-data:
@@ -24,17 +24,20 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium --with-deps
     
-      - name: Run Finance Scraper if:false
+      - name: Run Finance Scraper
+        if: false
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python finance_scraper.py
         
       - name: Run Weather Scraper
+        if: false
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python weather_scraper.py
 
-      - name: Run Pharmacies Scraper 
+      - name: Run Pharmacies Scraper
+        if: false
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python pharmacies_scraper.py
