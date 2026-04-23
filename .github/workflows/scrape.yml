@@ -23,17 +23,17 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium --with-deps
     
-      - name: Run Finance Scraper
+      - name: Run Finance Scraper if: false
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python finance_scraper.py
 
-      - name: Run Weather Scraper
+      - name: Run Weather Scraper if:false
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python weather_scraper.py
 
-      - name: Run Pharmacies Scraper
+      - name: Run Pharmacies Scraper if:false
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python pharmacies_scraper.py
