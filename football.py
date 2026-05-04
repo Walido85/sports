@@ -68,13 +68,22 @@ LEAGUES = [
         "results_url": "https://www.ysscores.com/en/championship/3734/Serie-A-statics"
     },
     {
+        "key": "la_liga",
+        "name": "La Liga",
+        "aliases": ["laliga", "la liga", "spanish la liga", "primera division", "liga española"],
+        "league_logo": "https://imgs.ysscores.com/championship/48/17656566406099.png",
+        "url": "https://www.ysscores.com/en/championship/1933/LaLiga",
+        "standings_url": "https://www.ysscores.com/en/championship/1933/LaLiga-rank",
+        "results_url": "https://www.ysscores.com/en/championship/1933/LaLiga-statics"
+    },
+    {
         "key": "ligue_1",
         "name": "Ligue 1",
         "aliases": ["ligue 1", "french ligue 1", "ligue 1 mcdonald", "ligue 1 uber", "ligue1"],
-        "league_logo": "https://imgs.ysscores.com/championship/48/17656566406099.png",
-        "url": "https://www.ysscores.com/en/championship/1933/Ligue-1",
-        "standings_url": "https://www.ysscores.com/en/championship/1933/Ligue-1-rank",
-        "results_url": "https://www.ysscores.com/en/championship/1933/Ligue-1-statics"
+        "league_logo": "https://imgs.ysscores.com/championship/48/4371694791523.png",
+        "url": "https://www.ysscores.com/en/championship/1985/Ligue-1",
+        "standings_url": "https://www.ysscores.com/en/championship/1985/Ligue-1-rank",
+        "results_url": "https://www.ysscores.com/en/championship/1985/Ligue-1-statics"
     },
     {
         "key": "bundesliga",
