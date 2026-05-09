@@ -22,4 +22,4 @@ jobs:
       - name: Run finance scraper
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: python sports/finance_scraper.py
+        run: python finance_scraper.py
