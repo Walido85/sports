@@ -2,7 +2,7 @@ name: Finance Scraper
 
 on:
   schedule:
-    - cron: '0 */12 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -17,10 +17,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 google-cloud-firestore google-auth
+        run: pip install requests cloudscraper beautifulsoup4 google-cloud-firestore google-auth
 
       - name: Run finance scraper
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python finance_scraper.py
-run: pip install requests cloudscraper beautifulsoup4 google-cloud-firestore google-auth
