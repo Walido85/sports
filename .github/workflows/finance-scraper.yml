@@ -23,3 +23,4 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python finance_scraper.py
+run: pip install requests cloudscraper beautifulsoup4 google-cloud-firestore google-auth
