@@ -7,7 +7,7 @@ import json
 import time
 
 # === FIRESTORE CONFIG ===
-firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
+firebase_secret = os.environ.get('FIREBASE_SERVICE_ACCOUNT')
 if not firebase_secret:
     print("No credentials.")
     exit(1)
