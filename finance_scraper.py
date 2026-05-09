@@ -6,7 +6,7 @@ import os
 import json
 import time
 
-# === SAME FIRESTORE CONFIG ===
+# === FIRESTORE CONFIG ===
 firebase_secret = os.environ.get('FIREBASE_CREDENTIALS')
 if not firebase_secret:
     print("No credentials.")
@@ -28,13 +28,13 @@ headers = {
 
 def scrape_tunisia_stocks():
     url = 'https://www.african-markets.com/en/stock-markets/bvmt/listed-companies?hl=en-US'
-    print("Scraping BVMT stocks from african-markets.com listed companies...")
+    print("Scraping BVMT stocks...")
     time.sleep(2)
     r = requests.get(url, headers=headers, timeout=20)
     if r.status_code != 200:
         print(f"⚠️ Blocked ({r.status_code})")
         return
-    
+
     soup = BeautifulSoup(r.content, 'html.parser')
     stocks = []
     table = soup.find('table')
@@ -53,7 +53,7 @@ def scrape_tunisia_stocks():
                         "change_pct": change_pct,
                         "date": date
                     })
-    
+
     if stocks:
         db.collection('finance').document('tunisia_stocks').set({
             "stocks": stocks[:80],
@@ -65,46 +65,64 @@ def scrape_tunisia_stocks():
     else:
         print("⚠️ No table found")
 
+
 def scrape_tunisia_exchange_rates():
-    rates = [
-        {"currency": "EUR", "value": "3.4128"},
-        {"currency": "USD", "value": "2.8774"},
-        {"currency": "GBP", "value": "3.9317"},
-        {"currency": "CAD", "value": "2.1173"},
-    ]
+    print("Fetching TND exchange rates...")
+    url = 'https://open.er-api.com/v6/latest/TND'
+    r = requests.get(url, timeout=10)
+    if r.status_code != 200:
+        print(f"⚠️ Exchange rate API failed ({r.status_code})")
+        return
+
+    data = r.json()
+    raw = data.get('rates', {})
+
+    currencies = ['EUR', 'USD', 'GBP', 'CAD']
+    rates = []
+    for currency in currencies:
+        if currency in raw:
+            value = round(1 / raw[currency], 4)
+            rates.append({"currency": currency, "value": str(value)})
+
     db.collection('finance').document('exchange_rates').set({
         "tnd_rates": rates,
-        "source": "latest known",
-        "date": "latest"
+        "source": "open.er-api.com",
+        "date": data.get('time_last_update_utc', '')
     })
-    print("✅ Saved 4 Tunisia exchange rates")
+    print(f"✅ Saved {len(rates)} live exchange rates")
+
 
 def scrape_international_indices():
+    print("Scraping international indices...")
     url = 'https://finance.yahoo.com/world-indices'
     r = requests.get(url, headers=headers, timeout=15)
     if r.status_code != 200:
         print(f"⚠️ Yahoo blocked ({r.status_code})")
         return
+
     soup = BeautifulSoup(r.content, 'html.parser')
     indices = []
     rows = soup.find_all('tr')
     for row in rows[1:]:
         cells = row.find_all('td')
-        if len(cells) >= 5:
+        if len(cells) >= 4:
             indices.append({
                 "name": cells[0].get_text(strip=True),
                 "last": cells[1].get_text(strip=True),
                 "chg": cells[2].get_text(strip=True),
                 "chg_pct": cells[3].get_text(strip=True),
             })
+
     if indices:
-        db.collection('finance').document('international_indices').set({"indices": indices[:20]})
+        db.collection('finance').document('international_indices').set({
+            "indices": indices[:20]
+        })
         print(f"✅ Saved {len(indices)} international indices")
     else:
-        print("No indices found")
+        print("⚠️ No indices found")
 
-print("🚀 Starting finance scraper with african-markets listed companies...")
-scrape_tunisia_stocks()
+
+# === RUN ===
 scrape_tunisia_exchange_rates()
+scrape_tunisia_stocks()
 scrape_international_indices()
-print("🎉 Finance scraper finished!")
