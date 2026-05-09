@@ -1,8 +1,7 @@
-import cloudscraper
+import curl_cffi
 from bs4 import BeautifulSoup
 from google.cloud import firestore
 from google.oauth2 import service_account
-from curl_cffi import requests as cffi_requests
 import requests
 import os
 import json
@@ -28,7 +27,7 @@ def scrape_tunisia_stocks():
     url = 'https://www.african-markets.com/en/stock-markets/bvmt/listed-companies?hl=en-US'
     print("Scraping BVMT stocks...")
     time.sleep(2)
-    r = cffi_requests.get(url, impersonate="chrome110", timeout=20)
+    r = curl_cffi.get(url, impersonate="chrome", timeout=20)
     if r.status_code != 200:
         print(f"⚠️ Blocked ({r.status_code})")
         return
@@ -93,7 +92,7 @@ def scrape_tunisia_exchange_rates():
 def scrape_international_indices():
     print("Scraping international indices...")
     url = 'https://finance.yahoo.com/world-indices'
-    r = cffi_requests.get(url, impersonate="chrome110", timeout=15)
+    r = curl_cffi.get(url, impersonate="chrome", timeout=15)
     if r.status_code != 200:
         print(f"⚠️ Yahoo blocked ({r.status_code})")
         return
