@@ -1,7 +1,8 @@
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from google.cloud import firestore
 from google.oauth2 import service_account
+import requests
 import os
 import json
 import time
@@ -21,16 +22,16 @@ db = firestore.Client(
 )
 print("✅ Connected to Firestore (default database)")
 
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-}
+scraper = cloudscraper.create_scraper(
+    browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+)
+
 
 def scrape_tunisia_stocks():
     url = 'https://www.african-markets.com/en/stock-markets/bvmt/listed-companies?hl=en-US'
     print("Scraping BVMT stocks...")
     time.sleep(2)
-    r = requests.get(url, headers=headers, timeout=20)
+    r = scraper.get(url, timeout=20)
     if r.status_code != 200:
         print(f"⚠️ Blocked ({r.status_code})")
         return
@@ -95,7 +96,7 @@ def scrape_tunisia_exchange_rates():
 def scrape_international_indices():
     print("Scraping international indices...")
     url = 'https://finance.yahoo.com/world-indices'
-    r = requests.get(url, headers=headers, timeout=15)
+    r = scraper.get(url, timeout=15)
     if r.status_code != 200:
         print(f"⚠️ Yahoo blocked ({r.status_code})")
         return
