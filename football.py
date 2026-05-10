@@ -648,4 +648,12 @@ async def main() -> None:
     print("\n" + "=" * 40)
     print("📊 FINAL SCRAPE SUMMARY:")
     print("=" * 40)
-    for doc, info in DEBUG_STATS.
+    
+    # EXACT FIX HERE: Items loop logic corrected properly.
+    for doc, info in DEBUG_STATS.items():
+        print(f"  {doc.ljust(30)} : {info}")
+        
+    print("=" * 40)
+
+if __name__ == "__main__":
+    asyncio.run(main())
