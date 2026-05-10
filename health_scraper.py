@@ -2,7 +2,6 @@ import json
 import os
 import csv
 import time
-import re
 from playwright.sync_api import sync_playwright
 
 OUTPUT_DIR = "output"
@@ -28,74 +27,98 @@ def save_csv(name, rows):
     print(f"📄 {name} — {len(rows)} rows")
 
 def parse_pharmacies(page, city):
-    results = []
-    # Target common list structures used by Med.tn
-    cards = page.locator(".search-result, .card, .liste-praticien, [class*='list-item'], li")
-    
     try:
-        cards.first.wait_for(timeout=5000)
+        # Wait specifically for the text inside the actual cards to load, ignoring CSS classes
+        page.wait_for_selector("text='Afficher le numéro'", timeout=15000)
     except:
-        print("      No cards visible or page format changed.")
-        return results
-        
-    count = cards.count()
-    print(f"      Found {count} potential elements")
+        print("      ❌ Timeout: No pharmacy cards loaded on this page.")
+        return []
 
+    # Scroll to ensure all lazy-loaded cards render
+    for _ in range(3):
+        page.mouse.wheel(0, 1500)
+        page.wait_for_timeout(1000)
+
+    # Locate and click all "Afficher le numéro" buttons to reveal hidden phone numbers
+    buttons = page.locator("text='Afficher le numéro'")
+    count = buttons.count()
+    print(f"      Found {count} pharmacies. Revealing numbers...")
+    
     for i in range(count):
-        card = cards.nth(i)
         try:
-            full_text = card.inner_text()
-            
-            # Filter out irrelevant list items
-            if "Pharmacie" not in full_text and "Afficher le numéro" not in full_text:
-                continue
-
-            # Extract Name
-            name_loc = card.locator("h2, h3, .name, strong").first
-            name = name_loc.inner_text().strip() if name_loc.count() > 0 else full_text.split('\n')[0].strip()
-
-            # Extract Address
-            address_loc = card.locator(".address, .adr, p, address").first
-            address = address_loc.inner_text().strip() if address_loc.count() > 0 else ""
-
-            # Click to reveal phone number
-            phone_btn = card.locator("text='Afficher le numéro', a[href^='tel'], [class*='phone'], [class*='call']").first
-            if phone_btn.count() > 0 and phone_btn.is_visible():
-                try:
-                    phone_btn.click(timeout=3000)
-                    page.wait_for_timeout(1000) # Wait for DOM to append number
-                    full_text = card.inner_text() # Refresh text
-                except:
-                    pass
-            
-            # Extract and format Phone
-            phone = ""
-            match = re.search(r'(\+?216)?[\s.-]*(\d{2})[\s.-]*(\d{3})[\s.-]*(\d{3,4})', full_text)
-            if match:
-                raw_phone = re.sub(r'\D', '', ''.join(match.groups()))
-                phone = raw_phone[3:] if raw_phone.startswith("216") and len(raw_phone) > 8 else raw_phone
-
-            if name and phone:
-                results.append({
-                    "nom": name,
-                    "adresse": address,
-                    "telephone": phone,
-                    "ville": city.replace("-", " ").title(),
-                    "type_garde": "Garde",
-                    "source": "med.tn",
-                    "scraped_at": time.strftime("%Y-%m-%d %H:%M")
-                })
-        except Exception:
+            # Evaluate click via JS to bypass overlay interceptions
+            buttons.nth(i).evaluate("node => node.click()")
+            page.wait_for_timeout(300)
+        except:
             continue
+            
+    page.wait_for_timeout(2000) # Give DOM time to update with the fetched numbers
 
-    print(f"      ✅ Extracted {len(results)} pharmacies")
-    return results
+    # Extract data using pure text-based DOM traversal
+    extracted = page.evaluate('''() => {
+        let results = [];
+        
+        // Find containers that have both "Pharmacie" and "Itinéraire" (Standard Med.tn card structure)
+        let allElements = Array.from(document.querySelectorAll('div, li, article, section'));
+        let cards = allElements.filter(el => {
+            let text = el.innerText || "";
+            return text.includes("Pharmacie") && 
+                   text.includes("Itinéraire") &&
+                   el.children.length > 2 && 
+                   el.children.length < 30; // Prevents grabbing the entire page body
+        });
+        
+        // Isolate the innermost container (the actual card)
+        cards = cards.filter(card => !cards.some(other => card !== other && card.contains(other)));
+        
+        cards.forEach(card => {
+            let text = card.innerText;
+            let lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+            
+            // Extract Name
+            let name = lines.find(l => l.toLowerCase().includes('pharmacie')) || lines[0];
+            
+            // Extract Phone
+            let phoneMatch = text.match(/(?:\\+?216)?[\\s.-]*([0-9]{2})[\\s.-]*([0-9]{3})[\\s.-]*([0-9]{3,4})/);
+            let phone = phoneMatch ? phoneMatch[0].replace(/\\D/g, '') : "";
+            if(phone.startsWith('216') && phone.length > 8) phone = phone.substring(3);
+            
+            // Extract Address (Usually located right above the 'Afficher le numéro' button)
+            let address = "";
+            for(let i = 0; i < lines.length; i++) {
+                if((lines[i].includes('Afficher') || lines[i].includes('numéro')) && i > 0) {
+                    address = lines[i-1];
+                    break;
+                }
+            }
+            if(!address || address === name) {
+               let longLines = lines.filter(l => l.length > 15 && !l.match(/\\d{8}/) && l !== name);
+               if(longLines.length > 0) address = longLines[0];
+            }
+            
+            if(name && phone) {
+                results.push({nom: name, adresse: address, telephone: phone});
+            }
+        });
+        return results;
+    }''')
+    
+    final_results = []
+    for item in extracted:
+        item["ville"] = city.replace("-", " ").title()
+        item["type_garde"] = "Garde"
+        item["source"] = "med.tn"
+        item["scraped_at"] = time.strftime("%Y-%m-%d %H:%M")
+        final_results.append(item)
+        
+    print(f"      ✅ Extracted {len(final_results)} pharmacies")
+    return final_results
 
 def main():
     start = time.time()
     all_pharmacies = []
     
-    print("🚀 med.tn Scraper - Mobile Optimized")
+    print("🚀 med.tn Scraper - Class-Agnostic Engine")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
@@ -106,18 +129,13 @@ def main():
         page = context.new_page()
 
         for city in CITIES:
-            # Med.tn uses 'tunis' instead of 'grand-tunis' in its route
+            # Med.tn routes 'grand-tunis' through the 'tunis' endpoint
             route = "tunis" if city == "grand-tunis" else city
             url = f"{BASE_URL}/pharmacie/garde/{route}"
             
             print(f"\n   🌐 {city.upper()} → {url}")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                
-                # Scroll down to trigger any lazy-loaded entries
-                page.mouse.wheel(0, 1500)
-                page.wait_for_timeout(3000)
-                
                 pharmacies = parse_pharmacies(page, city)
                 all_pharmacies.extend(pharmacies)
             except Exception as e:
@@ -125,7 +143,7 @@ def main():
 
         browser.close()
 
-    # Deduplicate by phone number
+    # Deduplicate by phone number to handle overlap
     seen = set()
     unique = [p for p in all_pharmacies if p["telephone"] and not (p["telephone"] in seen or seen.add(p["telephone"]))]
 
