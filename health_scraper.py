@@ -2,7 +2,7 @@ import json
 import os
 import csv
 import time
-import re
+from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 OUTPUT_DIR = "output"
@@ -27,68 +27,63 @@ def save_csv(name, rows):
         writer.writerows(rows)
     print(f"📄 {name} — {len(rows)} rows")
 
-def parse_pharmacies(page, city):
+def parse_html_with_bs4(html_content, city):
     results = []
+    soup = BeautifulSoup(html_content, "html.parser")
     
-    # 1. Click all potential buttons to reveal hidden phone numbers
-    try:
-        buttons = page.locator("text=/Afficher|Appeler|Numéro/i, button")
-        for i in range(buttons.count()):
-            try:
-                buttons.nth(i).click(timeout=500)
-            except:
-                pass
-        page.wait_for_timeout(2000)
-    except:
-        pass
+    # Based on your HTML, every pharmacy is wrapped in this class
+    blocks = soup.find_all('div', class_='card-doctor-block')
+    print(f"      Found {len(blocks)} pharmacy blocks in HTML.")
 
-    # 2. Find any heading that contains the word "pharmacie"
-    headings = page.locator("h1, h2, h3, h4, h5, strong")
-    count = headings.count()
-    print(f"      Found {count} potential titles on page. Parsing...")
-
-    for i in range(count):
+    for block in blocks:
         try:
-            heading = headings.nth(i)
-            name = heading.inner_text().strip()
-
-            # Filter out random text
-            if len(name) < 5 or "pharmacie" not in name.lower():
-                continue
-
-            # Grab the text block immediately surrounding this heading
-            block_text = heading.evaluate("el => { let p = el.parentElement; return p ? (p.parentElement ? p.parentElement.innerText : p.innerText) : ''; }")
+            # 1. Extract Name
+            name_el = block.find('div', class_='list__label--name')
+            name = name_el.get_text(strip=True) if name_el else ""
             
-            if not block_text:
-                continue
+            # Clean "Pharmacie de garde" from the name if present
+            if "pharmacie de garde" in name.lower():
+                name = name[18:].strip()
+            elif "pharmacie" in name.lower():
+                name = name[9:].strip()
 
-            # Regex to find a standard 8-digit Tunisian phone number in the block
-            phone_match = re.search(r'(?:\+?216)?[\s.-]*([2-9]\d)[\s.-]*(\d{3})[\s.-]*(\d{3})', block_text)
-            phone = ""
-            if phone_match:
-                raw_phone = re.sub(r'\D', '', phone_match.group(0))
-                phone = raw_phone[-8:]
-
-            # Extract the first line that looks like an address
+            # 2. Extract Address (Targeting the div with the specific location icon)
             address = ""
-            lines = [line.strip() for line in block_text.split('\n') if line.strip()]
-            for line in lines:
-                if line != name and not re.search(r'\d{8}', line) and "Afficher" not in line and "Itinéraire" not in line:
-                    address = line
+            addr_elems = block.find_all('div', class_='list__label--adr')
+            for addr in addr_elems:
+                if addr.find('i', class_='pfadmicon-glyph-686'):
+                    # Get text and remove "Tunisie" from the end
+                    address = addr.get_text(strip=True).replace("Tunisie", "").strip()
                     break
 
-            # Only append if we successfully linked a name and a phone number
-            if name and phone:
+            # 3. Extract Phone (Directly from the hidden phonemodal!)
+            phones = []
+            modal = block.find('div', class_='phonemodal')
+            if modal:
+                call_tags = modal.find_all('a', class_='calltel')
+                for tag in call_tags:
+                    raw_phone = tag.get_text(strip=True)
+                    # Clean the number (e.g., +216.73.374.630 -> 73374630)
+                    clean_phone = ''.join(filter(str.isdigit, raw_phone))
+                    if clean_phone.startswith("216") and len(clean_phone) > 8:
+                        clean_phone = clean_phone[3:]
+                    if clean_phone:
+                        phones.append(clean_phone)
+            
+            # If they have multiple numbers, join them with a dash
+            phone_str = " - ".join(phones)
+
+            if name and phone_str:
                 results.append({
                     "nom": name,
                     "adresse": address,
-                    "telephone": phone,
+                    "telephone": phone_str,
                     "ville": city.replace("-", " ").title(),
                     "type_garde": "Garde",
                     "source": "med.tn",
                     "scraped_at": time.strftime("%Y-%m-%d %H:%M")
                 })
-        except:
+        except Exception as e:
             continue
 
     print(f"      ✅ Extracted {len(results)} pharmacies")
@@ -98,13 +93,12 @@ def main():
     start = time.time()
     all_pharmacies = []
     
-    print("🚀 med.tn Scraper - Text Block Engine")
+    print("🚀 med.tn Scraper - Instant HTML Parsing Engine")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            viewport={"width": 390, "height": 844}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = context.new_page()
 
@@ -114,14 +108,12 @@ def main():
             
             print(f"\n   🌐 {city.upper()} → {url}")
             try:
+                # Load the page and immediately grab the HTML. No clicking. No waiting.
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                html_content = page.content()
                 
-                # Scroll to load dynamic content
-                for _ in range(3):
-                    page.mouse.wheel(0, 1500)
-                    page.wait_for_timeout(1000)
-                    
-                pharmacies = parse_pharmacies(page, city)
+                # Parse the raw HTML using BeautifulSoup
+                pharmacies = parse_html_with_bs4(html_content, city)
                 all_pharmacies.extend(pharmacies)
             except Exception as e:
                 print(f"      ❌ Error on {city}: {e}")
@@ -130,7 +122,11 @@ def main():
 
     # Deduplicate entries by phone number
     seen = set()
-    unique = [p for p in all_pharmacies if p["telephone"] and not (p["telephone"] in seen or seen.add(p["telephone"]))]
+    unique = []
+    for p in all_pharmacies:
+        if p["telephone"] and p["telephone"] not in seen:
+            seen.add(p["telephone"])
+            unique.append(p)
 
     elapsed = round(time.time() - start, 1)
     print(f"\n✅ Finished in {elapsed}s | Total unique: {len(unique)}")
