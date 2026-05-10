@@ -1,76 +1,32 @@
 """
-TuniWave Health Scraper — CNAM + SPOT
-Python version to match existing tuniwave-scraper repo
+TuniWave Health Scraper — med.tn
+Scrapes all pharmacies in Tunisia with Day / Night / Duty / Opened status
+Uses Playwright to handle JavaScript rendering
 Run: python health_scraper.py
 """
 
-import requests
 import json
 import os
 import csv
 import time
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from io import BytesIO
-
-try:
-    import openpyxl
-    HAS_OPENPYXL = True
-except ImportError:
-    HAS_OPENPYXL = False
-
-try:
-    import pandas as pd
-    HAS_PANDAS = True
-except ImportError:
-    HAS_PANDAS = False
+import re
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "fr-FR,fr;q=0.9,ar-TN;q=0.8,en;q=0.6",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Cache-Control": "no-cache",
-}
+BASE_URL = "https://www.med.tn/en"
 
-SESSION = requests.Session()
-SESSION.headers.update(HEADERS)
-
-GOVERNORATES = [
-    "Ariana", "Ben Arous", "Bizerte", "Beja", "Jendouba",
-    "Kairouan", "Mahdia", "Medenine", "Monastir", "Nabeul",
-    "La Manouba", "Tunis", "Zaghouan", "Siliana", "Le Kef",
-    "Sousse", "Kasserine", "Kebili", "Sidi Bouzid", "Sfax",
-    "Gabes", "Gafsa", "Tozeur", "Tataouine",
+CITIES = [
+    "Tunis", "Ariana", "Ben Arous", "Manouba", "Nabeul", "Zaghouan",
+    "Bizerte", "Beja", "Jendouba", "Le Kef", "Siliana", "Sousse",
+    "Monastir", "Mahdia", "Sfax", "Kairouan", "Kasserine", "Sidi Bouzid",
+    "Gabes", "Medenine", "Tataouine", "Gafsa", "Tozeur", "Kebili",
 ]
 
-# ── HTTP ──────────────────────────────────────────────────────────────────────
-
-def get(url, params=None, timeout=20, retries=3):
-    for attempt in range(retries):
-        try:
-            r = SESSION.get(url, params=params, timeout=timeout)
-            r.raise_for_status()
-            return r
-        except requests.exceptions.RequestException as e:
-            if attempt == retries - 1:
-                raise
-            time.sleep(1 * (attempt + 1))
-
-def get_html(url, params=None):
-    r = get(url, params=params)
-    r.encoding = r.apparent_encoding or "utf-8"
-    return r.text
-
-def get_binary(url):
-    r = get(url)
-    return r.content
+TYPES = ["Day", "Night", "Duty", "Opened"]
 
 # ── SAVE ──────────────────────────────────────────────────────────────────────
 
@@ -91,251 +47,356 @@ def save_csv(name, rows, columns):
         writer.writerows(rows)
     print(f"📄 {name} — {len(rows)} rows")
 
-# ── CNAM ──────────────────────────────────────────────────────────────────────
+# ── PARSE ─────────────────────────────────────────────────────────────────────
 
-CNAM_BASE = "https://catalog.data.gov.tn"
-CNAM_API  = f"{CNAM_BASE}/api/3/action/package_show?id=liste-des-prestataires-de-soins-conventionnes"
-CNAM_PAGE = f"{CNAM_BASE}/fr/dataset/liste-des-prestataires-de-soins-conventionnes"
-
-def cnam_get_download_urls():
-    print("\n📡 CNAM — finding dataset files...")
-
-    # 1. CKAN JSON API
-    try:
-        r = SESSION.get(CNAM_API, timeout=15, headers={**HEADERS, "Accept": "application/json"})
-        r.raise_for_status()
-        resources = r.json().get("result", {}).get("resources", [])
-        urls = [
-            {"url": res["url"], "format": res.get("format", "").upper(), "name": res.get("name", "")}
-            for res in resources
-            if any(ext in (res.get("format","") + res.get("url","")).lower() for ext in ["xlsx","xls","csv","json","ods"])
-        ]
-        if urls:
-            print(f"✅ CKAN API: {len(urls)} file(s) found")
-            return urls
-    except Exception as e:
-        print(f"⚠️  CKAN API: {e}")
-
-    # 2. HTML scrape
-    try:
-        print("   Trying HTML scrape...")
-        html = get_html(CNAM_PAGE)
-        soup = BeautifulSoup(html, "lxml")
-        urls = []
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if any(href.lower().endswith(ext) for ext in [".xlsx", ".xls", ".csv", ".json", ".ods"]):
-                full = href if href.startswith("http") else CNAM_BASE + href
-                if not any(u["url"] == full for u in urls):
-                    urls.append({"url": full, "format": href.rsplit(".", 1)[-1].upper(), "name": a.text.strip()})
-        if urls:
-            print(f"   HTML scrape: {len(urls)} file(s) found")
-            return urls
-    except Exception as e:
-        print(f"⚠️  HTML scrape: {e}")
-
-    print("❌ CNAM: no files found")
-    return []
-
-def parse_xlsx_bytes(content):
-    if not HAS_OPENPYXL:
-        print("⚠️  openpyxl not installed, skipping XLSX parse")
-        return []
-    wb = openpyxl.load_workbook(BytesIO(content), read_only=True, data_only=True)
-    rows = []
-    for sheet in wb.sheetnames:
-        ws = wb[sheet]
-        headers = None
-        for row in ws.iter_rows(values_only=True):
-            if headers is None:
-                headers = [str(c).strip() if c else "" for c in row]
-                continue
-            record = {headers[i]: (str(v).strip() if v is not None else "") for i, v in enumerate(row)}
-            rows.append(record)
-    return rows
-
-def parse_csv_bytes(content):
-    decoded = content.decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(decoded.splitlines())
-    return [dict(r) for r in reader]
-
-def normalize_provider(raw):
-    def get(*keys):
-        for k in keys:
-            for rk, rv in raw.items():
-                if k.lower() in rk.lower():
-                    return str(rv).strip()
-        return ""
-
-    phone = get("téléphone", "telephone", "phone", "tel", "gsm").replace(" ", "").replace(".", "")
-
-    return {
-        "nom":             get("nom"),
-        "prenom":          get("prénom", "prenom"),
-        "type":            get("type_prestataire", "type", "catégorie", "category"),
-        "specialite":      get("spécialité", "specialite", "specialty"),
-        "gouvernorat":     get("gouvernorat", "governorate", "région"),
-        "delegation":      get("délégation", "delegation"),
-        "adresse":         get("adresse", "address"),
-        "telephone":       phone,
-        "convention_cnam": "oui",
-        "type_garde":      "",
-        "source":          "CNAM",
-    }
-
-def download_and_parse(file_info):
-    try:
-        print(f"   ⬇️  {file_info['name'] or file_info['url']}")
-        content = get_binary(file_info["url"])
-        fmt = file_info["format"].lower()
-
-        if "csv" in fmt or file_info["url"].endswith(".csv"):
-            rows = parse_csv_bytes(content)
-        elif any(x in fmt for x in ["xls", "xlsx", "ods"]):
-            rows = parse_xlsx_bytes(content)
-        elif "json" in fmt:
-            data = json.loads(content)
-            rows = data if isinstance(data, list) else data.get("records", data.get("data", []))
-        else:
-            rows = parse_xlsx_bytes(content)  # try xlsx by default
-
-        print(f"   ✅ {len(rows)} rows parsed")
-        return rows
-    except Exception as e:
-        print(f"   ❌ Failed: {e}")
-        return []
-
-def scrape_cnam():
-    urls = cnam_get_download_urls()
-    if not urls:
-        return []
-
-    all_rows = []
-    # Download concurrently
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {ex.submit(download_and_parse, u): u for u in urls}
-        for future in as_completed(futures):
-            rows = future.result()
-            all_rows.extend(rows)
-
-    normalized = [normalize_provider(r) for r in all_rows]
-    return [r for r in normalized if r["nom"] or r["telephone"]]
-
-# ── SPOT ──────────────────────────────────────────────────────────────────────
-
-SPOT_BASE = "https://spot.tn"
-
-def get_delegations(ville):
-    try:
-        html = get_html(f"{SPOT_BASE}/", params={"mayor": "pharmacie", "ville": ville})
-        soup = BeautifulSoup(html, "lxml")
-        select = soup.find("select", {"name": lambda n: n and "deleg" in n.lower()})
-        if not select:
-            return [{"value": "", "label": "Toutes"}]
-        options = []
-        for opt in select.find_all("option"):
-            v = opt.get("value", "")
-            t = opt.text.strip()
-            if v and v not in ("0", ""):
-                options.append({"value": v, "label": t})
-        return options if options else [{"value": "", "label": "Toutes"}]
-    except:
-        return [{"value": "", "label": "Toutes"}]
-
-def parse_pharmacies(html, ville, delegation_label, type_garde):
-    soup = BeautifulSoup(html, "lxml")
+def parse_pharmacy_cards(page):
+    """Extract all pharmacy cards from current page state."""
     results = []
 
-    # Table rows
-    for row in soup.select("table tbody tr"):
-        cols = [td.text.strip() for td in row.find_all("td")]
-        if len(cols) >= 2 and cols[0]:
-            results.append({
-                "nom":         cols[0],
-                "adresse":     cols[1] if len(cols) > 1 else "",
-                "telephone":   cols[2].replace(" ", "") if len(cols) > 2 else "",
-                "horaires":    cols[3] if len(cols) > 3 else "",
-                "gouvernorat": ville,
-                "delegation":  delegation_label,
-                "type_garde":  type_garde,
-                "specialite":  "",
-                "prenom":      "",
-                "type":        "Pharmacie",
-                "convention_cnam": "",
-                "source":      "SPOT",
-            })
+    # Wait for results to load
+    try:
+        page.wait_for_selector(
+            "[class*='pharmacy'], [class*='Pharmacy'], [class*='card'], .result-item, article",
+            timeout=8000
+        )
+    except PlaywrightTimeout:
+        pass
 
-    # Card/div fallback
-    if not results:
-        for card in soup.select(".pharmacie, .pharmacy, [class*='pharm'], .result-item"):
-            nom = card.find(["h3", "h4", "strong"])
-            tel_tag = card.find("a", href=lambda h: h and h.startswith("tel:"))
-            nom_text = nom.text.strip() if nom else ""
-            tel_text = (tel_tag["href"].replace("tel:", "") if tel_tag else "").replace(" ", "")
-            if nom_text:
+    # Try to intercept JSON from network (most reliable)
+    # Done via route interception in the main scraper
+
+    # Parse HTML cards
+    cards = page.query_selector_all(
+        "[class*='pharmacy-card'], [class*='PharmacyCard'], "
+        "[class*='pharmacy-item'], [class*='PharmacyItem'], "
+        "[class*='result-card'], [class*='card-pharmacy'], "
+        "article, .pharmacy, [data-testid*='pharmacy']"
+    )
+
+    for card in cards:
+        try:
+            text = card.inner_text()
+            if not text.strip():
+                continue
+
+            # Name — usually first heading
+            name_el = card.query_selector("h2, h3, h4, [class*='name'], [class*='Name'], [class*='title']")
+            name = name_el.inner_text().strip() if name_el else ""
+
+            # Address
+            addr_el = card.query_selector("[class*='address'], [class*='Address'], [class*='adresse'], p")
+            address = addr_el.inner_text().strip() if addr_el else ""
+
+            # Phone
+            phone_el = card.query_selector("a[href^='tel:'], [class*='phone'], [class*='Phone'], [class*='tel']")
+            phone = ""
+            if phone_el:
+                href = phone_el.get_attribute("href") or ""
+                phone = href.replace("tel:", "").strip() or phone_el.inner_text().strip()
+
+            # Status badge
+            status_el = card.query_selector("[class*='status'], [class*='badge'], [class*='garde'], [class*='open']")
+            status = status_el.inner_text().strip() if status_el else ""
+
+            # GPS coordinates from any map link
+            map_el = card.query_selector("a[href*='maps'], a[href*='gps'], a[href*='lat']")
+            lat, lng = "", ""
+            if map_el:
+                href = map_el.get_attribute("href") or ""
+                coords = re.search(r"(\-?\d+\.\d+)[,&](\-?\d+\.\d+)", href)
+                if coords:
+                    lat, lng = coords.group(1), coords.group(2)
+
+            # City from card if available
+            city_el = card.query_selector("[class*='city'], [class*='City'], [class*='ville']")
+            city = city_el.inner_text().strip() if city_el else ""
+
+            # Working hours
+            hours_el = card.query_selector("[class*='hour'], [class*='Hour'], [class*='horaire'], [class*='schedule']")
+            hours = hours_el.inner_text().strip() if hours_el else ""
+
+            if name or phone:
                 results.append({
-                    "nom": nom_text,
-                    "adresse": "",
-                    "telephone": tel_text,
-                    "horaires": "",
-                    "gouvernorat": ville,
-                    "delegation": delegation_label,
-                    "type_garde": type_garde,
-                    "specialite": "",
-                    "prenom": "",
-                    "type": "Pharmacie",
-                    "convention_cnam": "",
-                    "source": "SPOT",
+                    "nom": name,
+                    "adresse": address,
+                    "telephone": phone.replace(" ", ""),
+                    "ville": city,
+                    "horaires": hours,
+                    "statut": status,
+                    "latitude": lat,
+                    "longitude": lng,
                 })
+        except Exception:
+            continue
 
     return results
 
-def search_spot(ville, delegation, type_garde):
-    params = {
-        "mayor": "pharmacie",
-        "ville": ville,
-        "delegation": delegation["value"],
-        "type": "nuit" if type_garde == "Nuit" else "jour",
-    }
-    try:
-        html = get_html(f"{SPOT_BASE}/", params=params)
-        return parse_pharmacies(html, ville, delegation["label"], type_garde)
-    except:
-        return []
 
-def scrape_spot():
-    print(f"\n📡 SPOT — fetching pharmacies across {len(GOVERNORATES)} governorates...")
-
-    # Build all tasks: city × delegation × day/night
-    tasks = []
-    print("   Getting delegations...")
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        futures = {ex.submit(get_delegations, v): v for v in GOVERNORATES}
-        city_delegations = {}
-        for future in as_completed(futures):
-            ville = futures[future]
-            city_delegations[ville] = future.result()
-
-    for ville in GOVERNORATES:
-        for delegation in city_delegations[ville]:
-            for type_garde in ["Jour", "Nuit"]:
-                tasks.append((ville, delegation, type_garde))
-
-    print(f"   {len(tasks)} search tasks queued")
-
+def get_all_pages(page, city, pharmacy_type):
+    """Scroll / paginate through all results for a city+type combination."""
     all_results = []
-    with ThreadPoolExecutor(max_workers=10) as ex:
-        futures = {ex.submit(search_spot, t[0], t[1], t[2]): t for t in tasks}
-        for future in as_completed(futures):
-            results = future.result()
-            if results:
-                t = futures[future]
-                print(f"   ✅ {t[0]}/{t[1]['label']}/{t[2]}: {len(results)}")
-                all_results.extend(results)
+    page_num = 1
+
+    while True:
+        results = parse_pharmacy_cards(page)
+
+        if not results and page_num == 1:
+            # Try raw text extraction as last resort
+            body = page.inner_text()
+            phones = re.findall(r"\b\d{8}\b|\b\+216\s?\d{8}\b", body)
+            if phones:
+                print(f"      ⚠️  Found {len(phones)} phones via text, no structured cards")
+            break
+
+        new_results = [r for r in results if r not in all_results]
+        if not new_results:
+            break
+
+        all_results.extend(new_results)
+        print(f"      Page {page_num}: {len(new_results)} pharmacies")
+
+        # Try next page button
+        next_btn = page.query_selector(
+            "button[aria-label*='next'], a[aria-label*='next'], "
+            "[class*='next-page'], [class*='NextPage'], "
+            "button:has-text('Next'), a:has-text('Next'), "
+            "[class*='pagination'] a:last-child, [class*='Pagination'] button:last-child"
+        )
+
+        if next_btn:
+            try:
+                next_btn.click()
+                page.wait_for_load_state("networkidle", timeout=8000)
+                page_num += 1
+            except Exception:
+                break
+        else:
+            # Try infinite scroll
+            prev_height = page.evaluate("document.body.scrollHeight")
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1.5)
+            new_height = page.evaluate("document.body.scrollHeight")
+            if new_height == prev_height:
+                break  # No more content
+            page_num += 1
 
     return all_results
 
-# ── DEDUP + MERGE ─────────────────────────────────────────────────────────────
+
+def search_city_type(page, city, pharmacy_type, intercepted):
+    """Perform a search for a specific city and pharmacy type."""
+    try:
+        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except PlaywrightTimeout:
+        pass
+
+    try:
+        # Click Pharmacy tab if needed
+        pharmacy_tab = page.query_selector(
+            "[class*='pharmacy-tab'], [data-tab='pharmacy'], "
+            "button:has-text('Pharmacy'), a:has-text('Pharmacy')"
+        )
+        if pharmacy_tab:
+            pharmacy_tab.click()
+            time.sleep(0.5)
+
+        # Fill city field
+        city_input = page.query_selector(
+            "input[placeholder*='City'], input[placeholder*='city'], "
+            "input[name*='city'], select[name*='city'], "
+            "[class*='city-input'], [class*='CityInput']"
+        )
+        if city_input:
+            tag = city_input.evaluate("el => el.tagName.toLowerCase()")
+            if tag == "select":
+                city_input.select_option(label=city)
+            else:
+                city_input.click()
+                city_input.fill(city)
+                time.sleep(0.5)
+                # Click dropdown option if appears
+                option = page.query_selector(f"[class*='option']:has-text('{city}'), li:has-text('{city}')")
+                if option:
+                    option.click()
+
+        # Select type radio: Day / Night / Duty / Opened
+        type_radio = page.query_selector(
+            f"input[type='radio'][value*='{pharmacy_type.lower()}'], "
+            f"label:has-text('{pharmacy_type}'), "
+            f"[class*='radio']:has-text('{pharmacy_type}')"
+        )
+        if type_radio:
+            type_radio.click()
+            time.sleep(0.3)
+
+        # Click Search button
+        search_btn = page.query_selector(
+            "button:has-text('SEARCH'), button:has-text('Search'), "
+            "button[type='submit'], [class*='search-btn'], [class*='SearchBtn']"
+        )
+        if search_btn:
+            search_btn.click()
+            page.wait_for_load_state("networkidle", timeout=12000)
+
+        return get_all_pages(page, city, pharmacy_type)
+
+    except Exception as e:
+        print(f"      ❌ Error: {e}")
+        return []
+
+
+def scrape_medtn():
+    print("\n📡 med.tn — scraping pharmacies (Day/Night/Duty/Opened)...")
+    print(f"   Cities: {len(CITIES)} | Types: {TYPES}")
+
+    all_pharmacies = []
+    intercepted_data = []  # Will capture API responses
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ]
+        )
+
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 800},
+            locale="fr-FR",
+        )
+
+        # Intercept API calls — most modern sites call a JSON API
+        def handle_response(response):
+            url = response.url
+            if any(kw in url for kw in ["pharmacy", "pharmacie", "search", "api"]):
+                try:
+                    ct = response.headers.get("content-type", "")
+                    if "json" in ct:
+                        data = response.json()
+                        if isinstance(data, (list, dict)) and data:
+                            intercepted_data.append({"url": url, "data": data})
+                            print(f"      📦 API intercepted: {url}")
+                except Exception:
+                    pass
+
+        page = context.new_page()
+        page.on("response", handle_response)
+
+        # First: detect API pattern from home page
+        print("   Detecting API pattern...")
+        try:
+            page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_load_state("networkidle", timeout=8000)
+
+            # Do one test search to capture API endpoint
+            search_city_type(page, "Tunis", "Night", intercepted_data)
+            time.sleep(2)
+        except Exception as e:
+            print(f"   ⚠️  Initial probe: {e}")
+
+        # If we captured API calls, use them directly — much faster
+        if intercepted_data:
+            print(f"\n   ✅ API detected! Using direct API calls for all cities/types")
+            api_url = intercepted_data[0]["url"]
+            print(f"   API: {api_url}")
+
+            # Extract the API pattern and iterate all combinations
+            import requests as req
+            import urllib3
+            urllib3.disable_warnings()
+
+            session = req.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Referer": BASE_URL,
+            })
+
+            # Get cookies from Playwright context
+            cookies = context.cookies()
+            for c in cookies:
+                session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
+
+            for city in CITIES:
+                for ptype in TYPES:
+                    try:
+                        # Build API URL based on intercepted pattern
+                        # Replace city/type params in captured URL
+                        test_url = re.sub(
+                            r"(city|ville|q)=[^&]*", f"\\1={city}", api_url, flags=re.IGNORECASE
+                        )
+                        test_url = re.sub(
+                            r"(type|garde|status)=[^&]*", f"\\1={ptype.lower()}", test_url, flags=re.IGNORECASE
+                        )
+
+                        r = session.get(test_url, timeout=15, verify=False)
+                        data = r.json()
+
+                        items = data if isinstance(data, list) else \
+                                data.get("data", data.get("results", data.get("pharmacies", [])))
+
+                        if items:
+                            print(f"   ✅ API {city}/{ptype}: {len(items)} pharmacies")
+                            for item in items:
+                                all_pharmacies.append(normalize(item, city, ptype))
+                        time.sleep(0.3)
+                    except Exception as e:
+                        print(f"   ⚠️  API {city}/{ptype}: {e}")
+
+        else:
+            # No API captured — use full Playwright scraping per city/type
+            print("\n   No API detected. Scraping via browser per city/type...")
+            for city in CITIES:
+                print(f"\n   📍 {city}")
+                for ptype in TYPES:
+                    print(f"      → {ptype}")
+                    results = search_city_type(page, city, ptype, intercepted_data)
+                    if results:
+                        print(f"      ✅ {len(results)} pharmacies")
+                        for r in results:
+                            r["type_garde"] = ptype
+                            r["gouvernorat"] = city
+                        all_pharmacies.extend(results)
+                    time.sleep(0.5)
+
+        browser.close()
+
+    # Save intercepted raw API data for debugging
+    if intercepted_data:
+        save_json("medtn_api_raw.json", intercepted_data)
+
+    return all_pharmacies
+
+
+def normalize(raw, city, ptype):
+    """Normalize a raw pharmacy record from any source."""
+    if isinstance(raw, dict):
+        r = {k.lower(): v for k, v in raw.items()}
+    else:
+        return {"nom": str(raw), "ville": city, "type_garde": ptype, "source": "med.tn"}
+
+    phone = str(r.get("phone", r.get("telephone", r.get("tel", r.get("mobile", ""))))).replace(" ", "")
+
+    return {
+        "nom":        r.get("name", r.get("nom", r.get("title", ""))),
+        "adresse":    r.get("address", r.get("adresse", r.get("location", ""))),
+        "telephone":  phone,
+        "ville":      r.get("city", r.get("ville", r.get("governorate", city))),
+        "delegation": r.get("delegation", r.get("district", "")),
+        "horaires":   r.get("hours", r.get("horaires", r.get("schedule", ""))),
+        "statut":     r.get("status", r.get("statut", ptype)),
+        "latitude":   str(r.get("lat", r.get("latitude", ""))),
+        "longitude":  str(r.get("lng", r.get("longitude", r.get("long", "")))),
+        "type_garde": ptype,
+        "gouvernorat": city,
+        "source":     "med.tn",
+    }
+
 
 def dedup(records):
     seen_phone = set()
@@ -343,8 +404,7 @@ def dedup(records):
     unique = []
     for r in records:
         phone = r.get("telephone", "").replace(" ", "").replace(".", "")
-        name  = f"{r.get('nom','')}|{r.get('gouvernorat','')}".lower()
-
+        name  = f"{r.get('nom','')}|{r.get('ville','')}".lower()
         if phone and len(phone) >= 8:
             if phone in seen_phone:
                 continue
@@ -353,66 +413,56 @@ def dedup(records):
             if name in seen_name:
                 continue
             seen_name.add(name)
-
         unique.append(r)
     return unique
 
-# ── MAIN ──────────────────────────────────────────────────────────────────────
 
 def main():
-    print("╔═══════════════════════════════════════╗")
-    print("║   TuniWave Health Scraper             ║")
-    print("║   CNAM + SPOT | Python | Concurrent   ║")
-    print("╚═══════════════════════════════════════╝")
+    print("╔══════════════════════════════════════════╗")
+    print("║   TuniWave Health Scraper — med.tn       ║")
+    print("║   Day / Night / Duty / Opened            ║")
+    print("╚══════════════════════════════════════════╝")
 
     start = time.time()
 
-    # Run both scrapers (CNAM then SPOT — SPOT is slow so give it full thread pool)
-    cnam_raw = scrape_cnam()
-    spot_raw = scrape_spot()
+    raw = scrape_medtn()
+    pharmacies = dedup(raw)
 
-    print(f"\n📊 Raw: CNAM={len(cnam_raw)} | SPOT={len(spot_raw)}")
-
-    merged = dedup(cnam_raw + spot_raw)
-
-    COLUMNS = ["nom","prenom","type","specialite","gouvernorat","delegation",
-               "adresse","telephone","convention_cnam","type_garde","source"]
-
-    pharmacies  = [r for r in merged if "pharm" in (r["type"]+r["source"]).lower() or r["source"] == "SPOT"]
-    doctors     = [r for r in merged if any(x in (r["type"]+r["specialite"]).lower() for x in ["médecin","doctor","spécial","chirurg"])]
-    labs        = [r for r in merged if "labor" in r["type"].lower() or "biol" in r["type"].lower()]
-    garde_nuit  = [r for r in merged if r.get("type_garde") == "Nuit"]
+    day   = [p for p in pharmacies if p.get("type_garde") == "Day"]
+    night = [p for p in pharmacies if p.get("type_garde") == "Night"]
+    duty  = [p for p in pharmacies if p.get("type_garde") == "Duty"]
 
     elapsed = round(time.time() - start, 1)
     print(f"\n✅ Done in {elapsed}s")
-    print(f"   Total unique:  {len(merged)}")
-    print(f"   Pharmacies:    {len(pharmacies)}")
-    print(f"   Doctors:       {len(doctors)}")
-    print(f"   Labs:          {len(labs)}")
-    print(f"   Garde nuit:    {len(garde_nuit)}")
+    print(f"   Total unique:  {len(pharmacies)}")
+    print(f"   Day:           {len(day)}")
+    print(f"   Night:         {len(night)}")
+    print(f"   Duty:          {len(duty)}")
 
-    save_json("all_providers.json", merged)
-    save_json("pharmacies.json", pharmacies)
-    save_json("doctors.json", doctors)
-    save_json("labs.json", labs)
-    save_json("garde_nuit.json", garde_nuit)
-    save_csv("all_providers.csv", merged, COLUMNS)
-    save_csv("pharmacies.csv", pharmacies, COLUMNS)
-    save_csv("doctors.csv", doctors, COLUMNS)
+    COLUMNS = ["nom", "adresse", "telephone", "ville", "delegation",
+               "horaires", "statut", "latitude", "longitude",
+               "type_garde", "gouvernorat", "source"]
+
+    save_json("pharmacies_all.json",   pharmacies)
+    save_json("pharmacies_day.json",   day)
+    save_json("pharmacies_night.json", night)
+    save_json("pharmacies_duty.json",  duty)
+    save_csv("pharmacies_all.csv",     pharmacies, COLUMNS)
 
     save_json("summary.json", {
         "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source": "med.tn",
         "duration_seconds": elapsed,
         "totals": {
-            "all": len(merged),
-            "pharmacies": len(pharmacies),
-            "doctors": len(doctors),
-            "labs": len(labs),
-            "garde_nuit": len(garde_nuit),
+            "all": len(pharmacies),
+            "day": len(day),
+            "night": len(night),
+            "duty": len(duty),
         }
     })
 
     print("\n📁 Files saved in ./output/")
+
 
 if __name__ == "__main__":
     main()
