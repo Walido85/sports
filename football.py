@@ -3,7 +3,6 @@ import json
 import os
 import re
 import sys
-from typing import List, Dict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -118,7 +117,6 @@ LEAGUES = [
 # HELPERS
 # ---------------------------------------------------------------------------
 def match_league_logo(champ_title: str, fallback_img: str) -> str:
-    """Match a scraped championship title to our known league logos using aliases."""
     t = champ_title.strip().lower()
     for league in LEAGUES:
         for alias in league["aliases"]:
@@ -133,7 +131,7 @@ def classify_status(result_text: str, css_classes: str) -> str:
         return "live"
     if "half" in t or "minute" in t or "'" in t or "live" in t:
         return "live"
-    if "ended" in t or "ft" in t or "final" in t or re.search(r'^\d+\s*-\s*\d+$', t):
+    if "ended" in t or "ft" in t or "final" in t or re.search(r'\d+\s*-\s*\d+', t):
         return "result"
     return "fixture"
 
@@ -185,11 +183,10 @@ def get_utc_iso(date_str: str, time_str: str, server_tz: str) -> str:
         dt_naive = datetime.strptime(f"{date_part} {time_str}", "%Y-%m-%d %H:%M")
         try:
             dt_aware = dt_naive.replace(tzinfo=ZoneInfo(server_tz))
-        except:
-            dt_aware = dt_naive.replace(tzinfo=ZoneInfo("America/Denver"))
+        except Exception:
+            dt_aware = dt_naive.replace(tzinfo=ZoneInfo("Europe/Paris"))
         return dt_aware.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception as e:
-        print(f"Timezone fix error: {e}")
+    except Exception:
         return ""
 
 def parse_date_from_text(text: str) -> str:
@@ -201,32 +198,107 @@ def parse_date_from_text(text: str) -> str:
     m = re.search(r'\d{1,2}-\d{1,2}-\d{2,4}', cleaned)
     return m.group(0) if m else ""
 
-def save(doc_id: str, data: dict) -> None:
-    data["timestamp"] = datetime.utcnow().isoformat()
-    db.collection('football').document(doc_id).set(data)
-    count_val = data.get("count", data.get("total_groups", 0))
-    DEBUG_STATS[doc_id] = count_val
-    safe_doc_id = doc_id.replace(" ", "_")
-    try:
-        with open(f"debug_{safe_doc_id}.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-    except:
-        pass
+def save_league(name: str, data: dict) -> None:
+    """Save all league data in a single Firestore document."""
+    data["updated_at"] = datetime.utcnow().isoformat()
+    db.collection("football").document(name).set(data)
+    fixtures_count  = len(data.get("fixtures", []))
+    results_count   = len(data.get("results", []))
+    standings = data.get("standings", {})
+    standings_count = len(standings.get("table", standings.get("groups", [])))
+    DEBUG_STATS[name] = f"fixtures={fixtures_count} results={results_count} standings={standings_count}"
+    print(f"   ✅ Saved '{name}' → fixtures={fixtures_count} results={results_count} standings={standings_count}")
+
+def save_live(matches: list) -> None:
+    db.collection("football").document("live").set({
+        "matches": matches,
+        "count": len(matches),
+        "updated_at": datetime.utcnow().isoformat()
+    })
+    print(f"   ✅ {len(matches):>3} LIVE saved")
 
 # ---------------------------------------------------------------------------
-# SCRAPERS
+# MATCH EVENTS (goals + cards) for a single match
 # ---------------------------------------------------------------------------
-async def scrape_live(page) -> None:
+async def scrape_match_events(context, match_url: str) -> list:
+    """Visit match events page and return goals + cards."""
+    events = []
+    page = await context.new_page()
+    try:
+        # Build events URL — switch to English and append -events
+        events_url = match_url.replace("/ar/", "/en/").replace("/fr/", "/en/").replace("/es/", "/en/")
+        if not events_url.endswith("-events"):
+            events_url = events_url.rstrip("/") + "-events"
+
+        await page.goto(events_url, wait_until="domcontentloaded", timeout=30000)
+        await asyncio.sleep(2)
+
+        event_items = await page.query_selector_all("div.match-event-item")
+        for item in event_items:
+            try:
+                link = await item.query_selector("a.comm_pop")
+                if not link:
+                    continue
+
+                # status: 1=goal, 2=yellow, 3=red, 4=substitution
+                status_attr = (await link.get_attribute("status") or "").strip()
+                player_a     = (await link.get_attribute("player_a") or "").strip()
+                player_s     = (await link.get_attribute("player_s") or "").strip()
+                player_img   = (await link.get_attribute("player_a_image") or "").strip()
+                player_s_img = (await link.get_attribute("player_s_image") or "").strip()
+                player_link  = (await link.get_attribute("player_link") or "").strip()
+                min_attr     = (await link.get_attribute("min") or "").strip()
+
+                item_classes = (await item.get_attribute("class") or "").lower()
+                side = "home" if "for-team-a" in item_classes else "away"
+
+                event_type = {
+                    "1": "goal",
+                    "2": "yellow_card",
+                    "3": "red_card",
+                    "4": "substitution"
+                }.get(status_attr, "")
+
+                if not event_type:
+                    continue
+
+                event = {
+                    "type": event_type,
+                    "player": player_a,
+                    "player_image": player_img,
+                    "player_link": player_link,
+                    "minute": min_attr,
+                    "side": side
+                }
+                if event_type == "goal":
+                    event["assist"] = player_s
+                    event["assist_image"] = player_s_img
+                elif event_type == "substitution":
+                    event["player_out"] = player_s
+
+                events.append(event)
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"   ⚠️ Events error: {e}")
+    finally:
+        await page.close()
+    return events
+
+# ---------------------------------------------------------------------------
+# LIVE SCRAPER
+# ---------------------------------------------------------------------------
+async def scrape_live(page, context) -> list:
     print("\n🔴 LIVE → all leagues ...")
     await page.goto("https://www.ysscores.com/en/today_matches", wait_until="domcontentloaded", timeout=60000)
     await asyncio.sleep(3)
 
     wrappers = await page.query_selector_all("div.matches-wrapper")
-    all_live_matches = []
+    live_matches_raw = []
 
     for wrapper in wrappers:
         champ_title = (await wrapper.get_attribute("champ_title") or "").strip()
-        champ_img = (await wrapper.get_attribute("champ_img") or "").strip()
+        champ_img   = (await wrapper.get_attribute("champ_img") or "").strip()
         league_logo = match_league_logo(champ_title, champ_img)
 
         elements = await wrapper.query_selector_all("a.ajax-match-item")
@@ -239,44 +311,95 @@ async def scrape_live(page) -> None:
 
                 res_wrap = await el.query_selector("div.result-wrap, .active-match-progress")
                 res_text = (await res_wrap.inner_text()).strip() if res_wrap else ""
-                cls_attr = await el.get_attribute("class") or ""
+                cls_attr = (await el.get_attribute("class") or "")
 
                 if classify_status(res_text, cls_attr) != "live":
                     continue
 
+                # Score
                 h_score_el = await el.query_selector(".first-team-result")
                 a_score_el = await el.query_selector(".second-team-result")
-                if h_score_el and a_score_el:
-                    score = f"{(await h_score_el.inner_text()).strip()} - {(await a_score_el.inner_text()).strip()}"
-                else:
-                    score = "-- - --"
+                score = f"{(await h_score_el.inner_text()).strip()} - {(await a_score_el.inner_text()).strip()}" \
+                    if h_score_el and a_score_el else "-- - --"
 
-                min_el = await el.query_selector(".match-time-status, .live-match-status, .match-inner-progress-wrap .number")
-                minute = (await min_el.inner_text()).strip() if min_el else ""
+                # Minute — use data-minutes + handle halftime/extra time
+                progress_wrap = await el.query_selector(".match-inner-progress-wrap")
+                minute = ""
+                is_halftime = False
+                between_time = ""
+
+                if progress_wrap:
+                    wrap_cls = (await progress_wrap.get_attribute("class") or "").lower()
+                    data_min = (await progress_wrap.get_attribute("data-minutes") or "").strip()
+
+                    if "stopped" in wrap_cls:
+                        is_halftime = True
+                        minute = "HT"
+                        # Get between-halves countdown
+                        between_el = await el.query_selector(".between-time")
+                        if between_el:
+                            between_time = (await between_el.inner_text()).strip()
+                    else:
+                        minute = f"{data_min}'" if data_min else ""
+                        # Extra time
+                        extra_el = await el.query_selector(".extra-count")
+                        if extra_el:
+                            extra_txt = (await extra_el.inner_text()).strip()
+                            if extra_txt and extra_txt not in ["0:0", "0", ""]:
+                                extra_min = extra_txt.split(":")[0] if ":" in extra_txt else extra_txt
+                                if extra_min and extra_min != "0":
+                                    minute = f"{data_min}+{extra_min}'"
 
                 href = (await el.get_attribute("href") or "").strip()
                 if href and not href.startswith("http"):
                     href = "https://www.ysscores.com" + href
 
-                all_live_matches.append({
-                    "home": home, "away": away,
+                live_matches_raw.append({
+                    "home": home,
+                    "away": away,
                     "home_logo": (await el.get_attribute("home_image") or "").strip(),
                     "away_logo": (await el.get_attribute("away_image") or "").strip(),
-                    "league": champ_title, "league_logo": league_logo,
+                    "league": champ_title,
+                    "league_logo": league_logo,
                     "date": standardize_date(datetime.now().strftime("%d-%m-%Y")),
-                    "status": "live", "score": score,
-                    "minute": minute, "url": href
+                    "status": "live",
+                    "score": score,
+                    "minute": minute,
+                    "is_halftime": is_halftime,
+                    "between_time": between_time,
+                    "url": href
                 })
-            except:
+            except Exception:
                 continue
 
-    if all_live_matches:
-        save("live", {"matches": all_live_matches, "count": len(all_live_matches)})
-        print(f"   ✅ {len(all_live_matches):>3} LIVE saved")
-    else:
-        print("   ℹ️  No live matches")
+    # Fetch events (goals + cards) for each live match concurrently
+    all_live = []
+    if live_matches_raw:
+        print(f"   ⏳ Fetching events for {len(live_matches_raw)} live matches...")
 
-async def scrape_fixtures(page, league: dict) -> None:
+        async def fetch_events(match_data):
+            if match_data.get("url"):
+                events = await scrape_match_events(context, match_data["url"])
+                match_data["events"] = events
+                goals = [e for e in events if e["type"] == "goal"]
+                yellow = [e for e in events if e["type"] == "yellow_card"]
+                red    = [e for e in events if e["type"] == "red_card"]
+                print(f"      ⚽ {match_data['home']} vs {match_data['away']}: "
+                      f"{len(goals)} goals, {len(yellow)} yellow, {len(red)} red")
+            else:
+                match_data["events"] = []
+            return match_data
+
+        results = await asyncio.gather(*[fetch_events(m) for m in live_matches_raw])
+        all_live = list(results)
+
+    save_live(all_live)
+    return all_live
+
+# ---------------------------------------------------------------------------
+# FIXTURES / RESULTS / STANDINGS — return data, do NOT save
+# ---------------------------------------------------------------------------
+async def scrape_fixtures(page, league: dict) -> list:
     name = league["name"]
     logo = league.get("league_logo", "")
     print(f"   ⏳ Fixtures → {name} ...")
@@ -286,7 +409,7 @@ async def scrape_fixtures(page, league: dict) -> None:
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
-        return el ? el.innerText.trim() : 'America/Denver';
+        return el ? el.innerText.trim() : 'Europe/Paris';
     }""")
 
     elements = await page.query_selector_all("div.matches-week-title, a.ajax-match-item")
@@ -294,7 +417,7 @@ async def scrape_fixtures(page, league: dict) -> None:
     fixtures = []
 
     for el in elements:
-        cls_attr = await el.get_attribute("class") or ""
+        cls_attr = (await el.get_attribute("class") or "")
         if "matches-week-title" in cls_attr:
             curr_date = parse_date_from_text((await el.inner_text()).strip())
             continue
@@ -321,22 +444,24 @@ async def scrape_fixtures(page, league: dict) -> None:
                 href = "https://www.ysscores.com" + href
 
             fixtures.append({
-                "home": home, "away": away,
+                "home": home,
+                "away": away,
                 "home_logo": (await el.get_attribute("home_image") or "").strip(),
                 "away_logo": (await el.get_attribute("away_image") or "").strip(),
                 "league_logo": logo,
-                "date": match_date, "status": "fixture",
+                "date": match_date,
+                "status": "fixture",
                 "time": match_time,
                 "timestamp_utc": get_utc_iso(match_date, match_time, server_tz),
                 "url": href
             })
-        except:
+        except Exception:
             continue
 
-    if fixtures:
-        save(f"{name}_fixtures", {"league": name, "league_logo": logo, "matches": fixtures, "count": len(fixtures)})
+    return fixtures
 
-async def scrape_results(page, league: dict) -> None:
+
+async def scrape_results(page, league: dict) -> list:
     name = league["name"]
     logo = league.get("league_logo", "")
     print(f"   ⏳ Results → {name} ...")
@@ -346,7 +471,7 @@ async def scrape_results(page, league: dict) -> None:
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
-        return el ? el.innerText.trim() : 'America/Denver';
+        return el ? el.innerText.trim() : 'Europe/Paris';
     }""")
 
     elements = await page.query_selector_all("div.matches-week-title, a.ajax-match-item")
@@ -354,7 +479,7 @@ async def scrape_results(page, league: dict) -> None:
     results = []
 
     for el in elements:
-        cls_attr = await el.get_attribute("class") or ""
+        cls_attr = (await el.get_attribute("class") or "")
         if "matches-week-title" in cls_attr:
             curr_date = parse_date_from_text((await el.inner_text()).strip())
             continue
@@ -364,39 +489,42 @@ async def scrape_results(page, league: dict) -> None:
             if not home or not away:
                 continue
 
-            res_wrap = await el.query_selector("div.result-wrap")
-            res_text = (await res_wrap.inner_text()).strip() if res_wrap else ""
-            if classify_status(res_text, cls_attr) != "result":
-                continue
-
+            # On the -statics page all matches are results.
+            # Use score elements as the reliable indicator.
             h_s = await el.query_selector("span.first-team-result")
             a_s = await el.query_selector("span.second-team-result")
-            score = f"{(await h_s.inner_text()).strip()} - {(await a_s.inner_text()).strip()}" if h_s and a_s else parse_score(res_text)
+            if not h_s or not a_s:
+                continue
 
+            score = f"{(await h_s.inner_text()).strip()} - {(await a_s.inner_text()).strip()}"
             match_date = standardize_date(curr_date)
+
             href = (await el.get_attribute("href") or "").strip()
             if href and not href.startswith("http"):
                 href = "https://www.ysscores.com" + href
 
             results.append({
-                "home": home, "away": away,
+                "home": home,
+                "away": away,
                 "home_logo": (await el.get_attribute("home_image") or "").strip(),
                 "away_logo": (await el.get_attribute("away_image") or "").strip(),
                 "league_logo": logo,
-                "date": match_date, "status": "result",
-                "score": score, "time": "FT",
+                "date": match_date,
+                "status": "result",
+                "score": score,
+                "time": "FT",
                 "timestamp_utc": get_utc_iso(match_date, "12:00", server_tz),
                 "url": href
             })
-        except:
+        except Exception:
             continue
 
-    if results:
-        save(f"{name}_results", {"league": name, "league_logo": logo, "matches": results, "count": len(results)})
+    return results
 
-async def scrape_standings(page, league: dict) -> None:
+
+async def scrape_standings(page, league: dict) -> dict:
     if not league.get("standings_url"):
-        return
+        return {}
 
     name = league["name"]
     logo = league.get("league_logo", "")
@@ -418,18 +546,20 @@ async def scrape_standings(page, league: dict) -> None:
                 rows = await rt.query_selector_all("div.rank-row")
                 teams = await _parse_rank_rows(rows)
                 if teams:
-                    groups.append({"group": gn, "teams": teams, "count": len(teams)})
-            except:
+                    groups.append({"group": gn, "teams": teams})
+            except Exception:
                 continue
-        if groups:
-            save(f"{name}_standings", {"league": name, "league_logo": logo, "type": "grouped", "groups": groups, "total_groups": len(groups)})
+        return {"type": "grouped", "groups": groups} if groups else {}
     else:
-        rt_el = await page.query_selector("div.ranking-table div.tab-pos-rank.rank_all") or await page.query_selector("div.ranking-table")
+        rt_el = (await page.query_selector("div.ranking-table div.tab-pos-rank.rank_all")
+                 or await page.query_selector("div.ranking-table"))
         if rt_el:
             rows = await rt_el.query_selector_all("div.rank-row")
             table = await _parse_rank_rows(rows)
             if table:
-                save(f"{name}_standings", {"league": name, "league_logo": logo, "type": "single", "table": table, "count": len(table)})
+                return {"type": "single", "table": table}
+    return {}
+
 
 async def _parse_rank_rows(rows) -> list:
     table = []
@@ -441,7 +571,8 @@ async def _parse_rank_rows(rows) -> list:
             pos = (await pos_el.inner_text()).strip()
             if not pos.isdigit():
                 continue
-            nd = await row.query_selector("div.rank-col.name div.team-name") or await row.query_selector("div.rank-col.name")
+            nd = (await row.query_selector("div.rank-col.name div.team-name")
+                  or await row.query_selector("div.rank-col.name"))
             info_el = await nd.query_selector("div.info")
             team = (await info_el.inner_text()).strip() if info_el else (await nd.inner_text()).strip()
             img_el = await nd.query_selector("img")
@@ -450,26 +581,39 @@ async def _parse_rank_rows(rows) -> list:
             def _get(sel): return row.query_selector(sel)
 
             table.append({
-                "position": pos, "team": team, "team_logo": t_logo,
-                "played": (await (await _get("div.rank-col.played")).inner_text()).strip(),
-                "wins": (await (await _get("div.rank-col.win")).inner_text()).strip(),
-                "draws": (await (await _get("div.rank-col.equal")).inner_text()).strip(),
-                "losses": (await (await _get("div.rank-col.lose")).inner_text()).strip(),
-                "goals": (await (await _get("div.rank-col.goals")).inner_text()).strip(),
-                "diff": (await (await _get("div.rank-col.diff")).inner_text()).strip(),
-                "points": (await (await _get("div.rank-col.points")).inner_text()).strip()
+                "position": pos,
+                "team":     team,
+                "team_logo": t_logo,
+                "played":  (await (await _get("div.rank-col.played")).inner_text()).strip(),
+                "wins":    (await (await _get("div.rank-col.win")).inner_text()).strip(),
+                "draws":   (await (await _get("div.rank-col.equal")).inner_text()).strip(),
+                "losses":  (await (await _get("div.rank-col.lose")).inner_text()).strip(),
+                "goals":   (await (await _get("div.rank-col.goals")).inner_text()).strip(),
+                "diff":    (await (await _get("div.rank-col.diff")).inner_text()).strip(),
+                "points":  (await (await _get("div.rank-col.points")).inner_text()).strip()
             })
-        except:
+        except Exception:
             continue
     return table
 
+# ---------------------------------------------------------------------------
+# PER-LEAGUE — collect all data then save 1 doc
+# ---------------------------------------------------------------------------
 async def scrape_league(context, league: dict) -> None:
     page = await context.new_page()
     try:
         print(f"\n🔄 {league['name']}")
-        await scrape_fixtures(page, league)
-        await scrape_results(page, league)
-        await scrape_standings(page, league)
+        fixtures  = await scrape_fixtures(page, league)
+        results   = await scrape_results(page, league)
+        standings = await scrape_standings(page, league)
+
+        save_league(league["name"], {
+            "league":      league["name"],
+            "league_logo": league.get("league_logo", ""),
+            "fixtures":    fixtures,
+            "results":     results,
+            "standings":   standings,
+        })
     except Exception as e:
         print(f"   ❌ Error in {league['name']}: {e}")
     finally:
@@ -485,15 +629,16 @@ async def main() -> None:
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
         )
 
-        # Live scraping first (single page)
+        # Live first — pass context so event pages can be opened
         live_page = await context.new_page()
-        await scrape_live(live_page)
+        await scrape_live(live_page, context)
         await live_page.close()
 
-        # All leagues run concurrently — each gets its own page
+        # All leagues concurrently
         await asyncio.gather(*[scrape_league(context, league) for league in LEAGUES])
 
         await browser.close()
@@ -501,8 +646,8 @@ async def main() -> None:
     print("\n" + "=" * 40)
     print("📊 FINAL SCRAPE SUMMARY:")
     print("=" * 40)
-    for doc, count in DEBUG_STATS.items():
-        print(f" {doc.ljust(30)} : {count} items")
+    for doc, info in DEBUG_STATS.items():
+        print(f"  {doc.ljust(30)} : {info}")
     print("=" * 40)
     print("🎉 Done!")
 
