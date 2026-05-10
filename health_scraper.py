@@ -29,31 +29,24 @@ def save_csv(name, rows):
 
 def parse_pharmacies(page, city):
     results = []
-    
-    # Primary selector from your HTML audit
     cards = page.query_selector_all(".list__, .listpharmacy .list__, article, .card-doctor")
+    
     print(f"      Found {len(cards)} cards")
 
     for card in cards:
         try:
-            # Name
-            name_el = card.query_selector(".list__label--name, .practitioner-name, h2, h3, strong")
+            name_el = card.query_selector(".list__label--name, h2, h3, strong")
             name = name_el.inner_text().strip() if name_el else ""
             if not name or len(name) < 5:
                 continue
 
-            # Address
-            addr_el = card.query_selector(".list__label--adr, .practitioner-address, p")
+            addr_el = card.query_selector(".list__label--adr, p")
             address = addr_el.inner_text().strip() if addr_el else ""
 
-            # Phone - most reliable
             phone = ""
-            phone_links = card.query_selector_all("a[href^='tel:']")
-            for link in phone_links:
-                href = link.get_attribute("href") or ""
-                if href.startswith("tel:"):
-                    phone = href.replace("tel:", "").strip()
-                    break
+            phone_el = card.query_selector("a[href^='tel:']")
+            if phone_el:
+                phone = phone_el.get_attribute("href").replace("tel:", "").strip()
 
             if not phone:
                 text = card.inner_text()
@@ -71,47 +64,58 @@ def parse_pharmacies(page, city):
                     "source": "med.tn",
                     "scraped_at": time.strftime("%Y-%m-%d %H:%M")
                 })
-        except Exception:
+        except:
             continue
-
-    print(f"      ✅ Extracted {len(results)} pharmacies from {city}")
     return results
+
+def get_all_pages(page, city):
+    all_results = []
+    page_num = 1
+
+    while True:
+        results = parse_pharmacies(page, city)
+        all_results.extend(results)
+        print(f"      Page {page_num}: {len(results)} new pharmacies")
+
+        # Pagination - "Suivant" button
+        next_btn = page.query_selector("a:has-text('Suivant'), button:has-text('Suivant'), .next, [aria-label*='next']")
+        if next_btn and next_btn.is_visible():
+            next_btn.click()
+            time.sleep(3)
+            page_num += 1
+        else:
+            break  # No more pages
+
+    return all_results
 
 def main():
     start = time.time()
     all_pharmacies = []
     
-    print("🚀 med.tn Scraper - Full Audit Version (Senior Dev)")
+    print("🚀 med.tn Scraper - Pagination + Full Audit Version")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            viewport={"width": 1366, "height": 900},
-            locale="fr-TN"
-        )
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = context.new_page()
 
         for city in CITIES:
-            url = f"{BASE_URL}/pharmacie/garde/{city}" if city != "grand-tunis" else f"{BASE_URL}/pharmacie/grand-tunis"
-            print(f"\n   🌐 Scraping {city.upper()} → {url}")
+            url = f"{BASE_URL}/pharmacie/grand-tunis" if city == "grand-tunis" else f"{BASE_URL}/pharmacie/garde/{city}"
+            print(f"\n   🌐 {city.upper()} → {url}")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 page.wait_for_load_state("networkidle", timeout=20000)
-                time.sleep(5)  # Critical wait for JS cards
+                time.sleep(5)
                 
-                pharmacies = parse_pharmacies(page, city)
+                pharmacies = get_all_pages(page, city)
                 all_pharmacies.extend(pharmacies)
             except Exception as e:
-                print(f"      ❌ Error on {city}: {e}")
+                print(f"      ❌ Error {city}: {e}")
             time.sleep(2)
 
         browser.close()
 
-    # Deduplicate by phone
+    # Dedup
     seen = set()
     unique = [p for p in all_pharmacies if p["telephone"] and p["telephone"] not in seen and not seen.add(p["telephone"])]
 
