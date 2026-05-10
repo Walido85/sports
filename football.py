@@ -184,7 +184,8 @@ def get_utc_iso(date_str: str, time_str: str, server_tz: str) -> str:
         try:
             dt_aware = dt_naive.replace(tzinfo=ZoneInfo(server_tz))
         except Exception:
-            dt_aware = dt_naive.replace(tzinfo=ZoneInfo("Europe/Paris"))
+            # Fallback directly to Tunis time 
+            dt_aware = dt_naive.replace(tzinfo=ZoneInfo("Africa/Tunis"))
         return dt_aware.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception:
         return ""
@@ -192,14 +193,13 @@ def get_utc_iso(date_str: str, time_str: str, server_tz: str) -> str:
 def parse_date_from_text(text: str) -> str:
     cleaned = re.sub(r'\d{1,2}:\d{2}\s*(?:am|pm)?', '', text, flags=re.IGNORECASE).strip()
     if "today" in cleaned.lower():
-        return datetime.now().strftime("%d-%m-%Y")
+        return datetime.now(ZoneInfo("Africa/Tunis")).strftime("%d-%m-%Y")
     if "tomorrow" in cleaned.lower():
-        return (datetime.now() + timedelta(days=1)).strftime("%d-%m-%Y")
+        return (datetime.now(ZoneInfo("Africa/Tunis")) + timedelta(days=1)).strftime("%d-%m-%Y")
     m = re.search(r'\d{1,2}-\d{1,2}-\d{2,4}', cleaned)
     return m.group(0) if m else ""
 
 def save_league(name: str, data: dict) -> None:
-    """Save all league data in a single Firestore document."""
     data["updated_at"] = datetime.utcnow().isoformat()
     db.collection("football").document(name).set(data)
     fixtures_count  = len(data.get("fixtures", []))
@@ -218,14 +218,12 @@ def save_live(matches: list) -> None:
     print(f"   ✅ {len(matches):>3} LIVE saved")
 
 # ---------------------------------------------------------------------------
-# MATCH EVENTS (goals + cards) for a single match
+# MATCH EVENTS 
 # ---------------------------------------------------------------------------
 async def scrape_match_events(context, match_url: str) -> list:
-    """Visit match events page and return goals + cards."""
     events = []
     page = await context.new_page()
     try:
-        # Build events URL — switch to English and append -events
         events_url = match_url.replace("/ar/", "/en/").replace("/fr/", "/en/").replace("/es/", "/en/")
         if not events_url.endswith("-events"):
             events_url = events_url.rstrip("/") + "-events"
@@ -240,7 +238,6 @@ async def scrape_match_events(context, match_url: str) -> list:
                 if not link:
                     continue
 
-                # status: 1=goal, 2=yellow, 3=red, 4=substitution
                 status_attr = (await link.get_attribute("status") or "").strip()
                 player_a     = (await link.get_attribute("player_a") or "").strip()
                 player_s     = (await link.get_attribute("player_s") or "").strip()
@@ -316,39 +313,42 @@ async def scrape_live(page, context) -> list:
                 if classify_status(res_text, cls_attr) != "live":
                     continue
 
-                # Score
                 h_score_el = await el.query_selector(".first-team-result")
                 a_score_el = await el.query_selector(".second-team-result")
                 score = f"{(await h_score_el.inner_text()).strip()} - {(await a_score_el.inner_text()).strip()}" \
                     if h_score_el and a_score_el else "-- - --"
 
-                # Minute — use data-minutes + handle halftime/extra time
                 progress_wrap = await el.query_selector(".match-inner-progress-wrap")
                 minute = ""
                 is_halftime = False
                 between_time = ""
+                match_phase = ""
 
                 if progress_wrap:
                     wrap_cls = (await progress_wrap.get_attribute("class") or "").lower()
                     data_min = (await progress_wrap.get_attribute("data-minutes") or "").strip()
+                    
+                    phase_el = await progress_wrap.query_selector(".live-match-status")
+                    match_phase = (await phase_el.inner_text()).strip() if phase_el else ""
 
                     if "stopped" in wrap_cls:
                         is_halftime = True
                         minute = "HT"
-                        # Get between-halves countdown
                         between_el = await el.query_selector(".between-time")
                         if between_el:
                             between_time = (await between_el.inner_text()).strip()
                     else:
-                        minute = f"{data_min}'" if data_min else ""
-                        # Extra time
-                        extra_el = await el.query_selector(".extra-count")
+                        # Extract exact minutes formatting (MM:SS) if available
+                        exact_el = await progress_wrap.query_selector(".percent .number")
+                        exact_time = (await exact_el.inner_text()).strip() if exact_el else ""
+                        
+                        minute = exact_time if exact_time else (f"{data_min}'" if data_min else "")
+                        
+                        extra_el = await progress_wrap.query_selector(".extra-count")
                         if extra_el:
                             extra_txt = (await extra_el.inner_text()).strip()
-                            if extra_txt and extra_txt not in ["0:0", "0", ""]:
-                                extra_min = extra_txt.split(":")[0] if ":" in extra_txt else extra_txt
-                                if extra_min and extra_min != "0":
-                                    minute = f"{data_min}+{extra_min}'"
+                            if extra_txt and extra_txt not in ["0:0", "00:00", "0", ""]:
+                                minute += f" + {extra_txt}"
 
                 href = (await el.get_attribute("href") or "").strip()
                 if href and not href.startswith("http"):
@@ -361,10 +361,11 @@ async def scrape_live(page, context) -> list:
                     "away_logo": (await el.get_attribute("away_image") or "").strip(),
                     "league": champ_title,
                     "league_logo": league_logo,
-                    "date": standardize_date(datetime.now().strftime("%d-%m-%Y")),
+                    "date": standardize_date(datetime.now(ZoneInfo("Africa/Tunis")).strftime("%d-%m-%Y")),
                     "status": "live",
                     "score": score,
                     "minute": minute,
+                    "phase": match_phase,
                     "is_halftime": is_halftime,
                     "between_time": between_time,
                     "url": href
@@ -372,7 +373,6 @@ async def scrape_live(page, context) -> list:
             except Exception:
                 continue
 
-    # Fetch events (goals + cards) for each live match concurrently
     all_live = []
     if live_matches_raw:
         print(f"   ⏳ Fetching events for {len(live_matches_raw)} live matches...")
@@ -385,6 +385,7 @@ async def scrape_live(page, context) -> list:
                 yellow = [e for e in events if e["type"] == "yellow_card"]
                 red    = [e for e in events if e["type"] == "red_card"]
                 print(f"      ⚽ {match_data['home']} vs {match_data['away']}: "
+                      f"{match_data['minute']} - Phase: {match_data['phase']} | "
                       f"{len(goals)} goals, {len(yellow)} yellow, {len(red)} red")
             else:
                 match_data["events"] = []
@@ -397,7 +398,7 @@ async def scrape_live(page, context) -> list:
     return all_live
 
 # ---------------------------------------------------------------------------
-# FIXTURES / RESULTS / STANDINGS — return data, do NOT save
+# FIXTURES / RESULTS / STANDINGS
 # ---------------------------------------------------------------------------
 async def scrape_fixtures(page, league: dict) -> list:
     name = league["name"]
@@ -409,7 +410,7 @@ async def scrape_fixtures(page, league: dict) -> list:
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
-        return el ? el.innerText.trim() : 'Europe/Paris';
+        return el ? el.innerText.trim() : 'Africa/Tunis';
     }""")
 
     elements = await page.query_selector_all("div.matches-week-title, a.ajax-match-item")
@@ -471,7 +472,7 @@ async def scrape_results(page, league: dict) -> list:
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
-        return el ? el.innerText.trim() : 'Europe/Paris';
+        return el ? el.innerText.trim() : 'Africa/Tunis';
     }""")
 
     elements = await page.query_selector_all("div.matches-week-title, a.ajax-match-item")
@@ -489,8 +490,6 @@ async def scrape_results(page, league: dict) -> list:
             if not home or not away:
                 continue
 
-            # On the -statics page all matches are results.
-            # Use score elements as the reliable indicator.
             h_s = await el.query_selector("span.first-team-result")
             a_s = await el.query_selector("span.second-team-result")
             if not h_s or not a_s:
@@ -520,7 +519,6 @@ async def scrape_results(page, league: dict) -> list:
             continue
 
     return results
-
 
 async def scrape_standings(page, league: dict) -> dict:
     if not league.get("standings_url"):
@@ -560,7 +558,6 @@ async def scrape_standings(page, league: dict) -> dict:
                 return {"type": "single", "table": table}
     return {}
 
-
 async def _parse_rank_rows(rows) -> list:
     table = []
     for row in rows:
@@ -597,7 +594,7 @@ async def _parse_rank_rows(rows) -> list:
     return table
 
 # ---------------------------------------------------------------------------
-# PER-LEAGUE — collect all data then save 1 doc
+# PER-LEAGUE
 # ---------------------------------------------------------------------------
 async def scrape_league(context, league: dict) -> None:
     page = await context.new_page()
@@ -628,17 +625,18 @@ async def main() -> None:
             headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
+        
+        # FIX: Forcing Africa/Tunis natively renders website in your exact timezone, resolving the 1 hour offset
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            timezone_id="Africa/Tunis",
+            locale="en-US"
         )
 
-        # Live first — pass context so event pages can be opened
         live_page = await context.new_page()
         await scrape_live(live_page, context)
         await live_page.close()
 
-        # All leagues concurrently
         await asyncio.gather(*[scrape_league(context, league) for league in LEAGUES])
 
         await browser.close()
