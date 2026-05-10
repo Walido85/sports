@@ -11,6 +11,9 @@ from playwright_stealth import Stealth
 from google.cloud import firestore
 from google.oauth2 import service_account
 
+# Set strict timezone for all Python time operations
+TUNIS_TZ = ZoneInfo("Africa/Tunis")
+
 sys.stdout.reconfigure(line_buffering=True)
 os.makedirs("debug", exist_ok=True)
 
@@ -135,12 +138,6 @@ def classify_status(result_text: str, css_classes: str) -> str:
         return "result"
     return "fixture"
 
-def parse_score(result_text: str) -> str:
-    m = re.search(r'(\d+)\s*-\s*(\d+)', result_text.strip())
-    if m:
-        return f"{m.group(1)} - {m.group(2)}"
-    return "-- - --"
-
 def parse_time_24h(raw_text: str) -> str:
     text = raw_text.strip()
     m = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM)?', text, re.IGNORECASE)
@@ -184,8 +181,7 @@ def get_utc_iso(date_str: str, time_str: str, server_tz: str) -> str:
         try:
             dt_aware = dt_naive.replace(tzinfo=ZoneInfo(server_tz))
         except Exception:
-            # Fallback directly to Tunis time 
-            dt_aware = dt_naive.replace(tzinfo=ZoneInfo("Africa/Tunis"))
+            dt_aware = dt_naive.replace(tzinfo=TUNIS_TZ)
         return dt_aware.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
     except Exception:
         return ""
@@ -193,9 +189,9 @@ def get_utc_iso(date_str: str, time_str: str, server_tz: str) -> str:
 def parse_date_from_text(text: str) -> str:
     cleaned = re.sub(r'\d{1,2}:\d{2}\s*(?:am|pm)?', '', text, flags=re.IGNORECASE).strip()
     if "today" in cleaned.lower():
-        return datetime.now(ZoneInfo("Africa/Tunis")).strftime("%d-%m-%Y")
+        return datetime.now(TUNIS_TZ).strftime("%d-%m-%Y")
     if "tomorrow" in cleaned.lower():
-        return (datetime.now(ZoneInfo("Africa/Tunis")) + timedelta(days=1)).strftime("%d-%m-%Y")
+        return (datetime.now(TUNIS_TZ) + timedelta(days=1)).strftime("%d-%m-%Y")
     m = re.search(r'\d{1,2}-\d{1,2}-\d{2,4}', cleaned)
     return m.group(0) if m else ""
 
@@ -207,7 +203,7 @@ def save_league(name: str, data: dict) -> None:
     standings = data.get("standings", {})
     standings_count = len(standings.get("table", standings.get("groups", [])))
     DEBUG_STATS[name] = f"fixtures={fixtures_count} results={results_count} standings={standings_count}"
-    print(f"   ✅ Saved '{name}' → fixtures={fixtures_count} results={results_count} standings={standings_count}")
+    print(f"✅ Saved '{name}' → fixtures={fixtures_count} results={results_count} standings={standings_count}")
 
 def save_live(matches: list) -> None:
     db.collection("football").document("live").set({
@@ -215,7 +211,7 @@ def save_live(matches: list) -> None:
         "count": len(matches),
         "updated_at": datetime.utcnow().isoformat()
     })
-    print(f"   ✅ {len(matches):>3} LIVE saved")
+    print(f"✅ Saved 'LIVE' → matches={len(matches)}")
 
 # ---------------------------------------------------------------------------
 # MATCH EVENTS 
@@ -229,7 +225,12 @@ async def scrape_match_events(context, match_url: str) -> list:
             events_url = events_url.rstrip("/") + "-events"
 
         await page.goto(events_url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        
+        # Give exact elements time to mount to avoid race conditions
+        try:
+            await page.wait_for_selector("div.match-event-item", timeout=5000)
+        except Exception:
+            pass
 
         event_items = await page.query_selector_all("div.match-event-item")
         for item in event_items:
@@ -276,8 +277,8 @@ async def scrape_match_events(context, match_url: str) -> list:
                 events.append(event)
             except Exception:
                 continue
-    except Exception as e:
-        print(f"   ⚠️ Events error: {e}")
+    except Exception:
+        pass
     finally:
         await page.close()
     return events
@@ -286,107 +287,106 @@ async def scrape_match_events(context, match_url: str) -> list:
 # LIVE SCRAPER
 # ---------------------------------------------------------------------------
 async def scrape_live(page, context) -> list:
-    print("\n🔴 LIVE → all leagues ...")
     await page.goto("https://www.ysscores.com/en/today_matches", wait_until="domcontentloaded", timeout=60000)
-    await asyncio.sleep(3)
+    
+    # Wait explicitly for match items to load via AJAX instead of blindly sleeping
+    try:
+        await page.wait_for_selector("a.ajax-match-item", timeout=15000)
+    except Exception:
+        pass
 
     wrappers = await page.query_selector_all("div.matches-wrapper")
     live_matches_raw = []
 
     for wrapper in wrappers:
-        champ_title = (await wrapper.get_attribute("champ_title") or "").strip()
-        champ_img   = (await wrapper.get_attribute("champ_img") or "").strip()
-        league_logo = match_league_logo(champ_title, champ_img)
+        try:
+            champ_title = (await wrapper.get_attribute("champ_title") or "").strip()
+            champ_img   = (await wrapper.get_attribute("champ_img") or "").strip()
+            league_logo = match_league_logo(champ_title, champ_img)
 
-        elements = await wrapper.query_selector_all("a.ajax-match-item")
-        for el in elements:
-            try:
-                home = (await el.get_attribute("home_name") or "").strip()
-                away = (await el.get_attribute("away_name") or "").strip()
-                if not home or not away:
-                    continue
+            elements = await wrapper.query_selector_all("a.ajax-match-item")
+            for el in elements:
+                try:
+                    home = (await el.get_attribute("home_name") or "").strip()
+                    away = (await el.get_attribute("away_name") or "").strip()
+                    if not home or not away:
+                        continue
 
-                res_wrap = await el.query_selector("div.result-wrap, .active-match-progress")
-                res_text = (await res_wrap.inner_text()).strip() if res_wrap else ""
-                cls_attr = (await el.get_attribute("class") or "")
+                    res_wrap = await el.query_selector("div.result-wrap, .active-match-progress")
+                    res_text = (await res_wrap.inner_text()).strip() if res_wrap else ""
+                    cls_attr = (await el.get_attribute("class") or "")
 
-                if classify_status(res_text, cls_attr) != "live":
-                    continue
+                    if classify_status(res_text, cls_attr) != "live":
+                        continue
 
-                h_score_el = await el.query_selector(".first-team-result")
-                a_score_el = await el.query_selector(".second-team-result")
-                score = f"{(await h_score_el.inner_text()).strip()} - {(await a_score_el.inner_text()).strip()}" \
-                    if h_score_el and a_score_el else "-- - --"
+                    h_score_el = await el.query_selector(".first-team-result")
+                    a_score_el = await el.query_selector(".second-team-result")
+                    score = f"{(await h_score_el.inner_text()).strip() if h_score_el else ''} - {(await a_score_el.inner_text()).strip() if a_score_el else ''}"
+                    if score == " - ":
+                        score = "-- - --"
 
-                progress_wrap = await el.query_selector(".match-inner-progress-wrap")
-                minute = ""
-                is_halftime = False
-                between_time = ""
-                match_phase = ""
+                    progress_wrap = await el.query_selector(".match-inner-progress-wrap")
+                    minute = ""
+                    is_halftime = False
+                    between_time = ""
+                    match_phase = ""
 
-                if progress_wrap:
-                    wrap_cls = (await progress_wrap.get_attribute("class") or "").lower()
-                    data_min = (await progress_wrap.get_attribute("data-minutes") or "").strip()
-                    
-                    phase_el = await progress_wrap.query_selector(".live-match-status")
-                    match_phase = (await phase_el.inner_text()).strip() if phase_el else ""
-
-                    if "stopped" in wrap_cls:
-                        is_halftime = True
-                        minute = "HT"
-                        between_el = await el.query_selector(".between-time")
-                        if between_el:
-                            between_time = (await between_el.inner_text()).strip()
-                    else:
-                        # Extract exact minutes formatting (MM:SS) if available
-                        exact_el = await progress_wrap.query_selector(".percent .number")
-                        exact_time = (await exact_el.inner_text()).strip() if exact_el else ""
+                    if progress_wrap:
+                        wrap_cls = (await progress_wrap.get_attribute("class") or "").lower()
+                        data_min = (await progress_wrap.get_attribute("data-minutes") or "").strip()
                         
-                        minute = exact_time if exact_time else (f"{data_min}'" if data_min else "")
-                        
-                        extra_el = await progress_wrap.query_selector(".extra-count")
-                        if extra_el:
-                            extra_txt = (await extra_el.inner_text()).strip()
-                            if extra_txt and extra_txt not in ["0:0", "00:00", "0", ""]:
-                                minute += f" + {extra_txt}"
+                        phase_el = await progress_wrap.query_selector(".live-match-status")
+                        match_phase = (await phase_el.inner_text()).strip() if phase_el else ""
 
-                href = (await el.get_attribute("href") or "").strip()
-                if href and not href.startswith("http"):
-                    href = "https://www.ysscores.com" + href
+                        if "stopped" in wrap_cls:
+                            is_halftime = True
+                            minute = "HT"
+                            between_el = await el.query_selector(".between-time")
+                            if between_el:
+                                between_time = (await between_el.inner_text()).strip()
+                        else:
+                            exact_el = await progress_wrap.query_selector(".percent .number")
+                            exact_time = (await exact_el.inner_text()).strip() if exact_el else ""
+                            
+                            minute = exact_time if exact_time else (f"{data_min}'" if data_min else "")
+                            
+                            extra_el = await progress_wrap.query_selector(".extra-count")
+                            if extra_el:
+                                extra_txt = (await extra_el.inner_text()).strip()
+                                if extra_txt and extra_txt not in ["0:0", "00:00", "0", ""]:
+                                    minute += f" + {extra_txt}"
 
-                live_matches_raw.append({
-                    "home": home,
-                    "away": away,
-                    "home_logo": (await el.get_attribute("home_image") or "").strip(),
-                    "away_logo": (await el.get_attribute("away_image") or "").strip(),
-                    "league": champ_title,
-                    "league_logo": league_logo,
-                    "date": standardize_date(datetime.now(ZoneInfo("Africa/Tunis")).strftime("%d-%m-%Y")),
-                    "status": "live",
-                    "score": score,
-                    "minute": minute,
-                    "phase": match_phase,
-                    "is_halftime": is_halftime,
-                    "between_time": between_time,
-                    "url": href
-                })
-            except Exception:
-                continue
+                    href = (await el.get_attribute("href") or "").strip()
+                    if href and not href.startswith("http"):
+                        href = "https://www.ysscores.com" + href
+
+                    live_matches_raw.append({
+                        "home": home,
+                        "away": away,
+                        "home_logo": (await el.get_attribute("home_image") or "").strip(),
+                        "away_logo": (await el.get_attribute("away_image") or "").strip(),
+                        "league": champ_title,
+                        "league_logo": league_logo,
+                        "date": standardize_date(datetime.now(TUNIS_TZ).strftime("%d-%m-%Y")),
+                        "status": "live",
+                        "score": score,
+                        "minute": minute,
+                        "phase": match_phase,
+                        "is_halftime": is_halftime,
+                        "between_time": between_time,
+                        "url": href
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     all_live = []
     if live_matches_raw:
-        print(f"   ⏳ Fetching events for {len(live_matches_raw)} live matches...")
-
         async def fetch_events(match_data):
             if match_data.get("url"):
                 events = await scrape_match_events(context, match_data["url"])
                 match_data["events"] = events
-                goals = [e for e in events if e["type"] == "goal"]
-                yellow = [e for e in events if e["type"] == "yellow_card"]
-                red    = [e for e in events if e["type"] == "red_card"]
-                print(f"      ⚽ {match_data['home']} vs {match_data['away']}: "
-                      f"{match_data['minute']} - Phase: {match_data['phase']} | "
-                      f"{len(goals)} goals, {len(yellow)} yellow, {len(red)} red")
             else:
                 match_data["events"] = []
             return match_data
@@ -403,10 +403,12 @@ async def scrape_live(page, context) -> list:
 async def scrape_fixtures(page, league: dict) -> list:
     name = league["name"]
     logo = league.get("league_logo", "")
-    print(f"   ⏳ Fixtures → {name} ...")
 
     await page.goto(league["url"], wait_until="domcontentloaded", timeout=60000)
-    await asyncio.sleep(3)
+    try:
+        await page.wait_for_selector("div.matches-week-title, a.ajax-match-item", timeout=15000)
+    except Exception:
+        pass
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
@@ -457,7 +459,7 @@ async def scrape_fixtures(page, league: dict) -> list:
                 "url": href
             })
         except Exception:
-            continue
+            pass
 
     return fixtures
 
@@ -465,10 +467,12 @@ async def scrape_fixtures(page, league: dict) -> list:
 async def scrape_results(page, league: dict) -> list:
     name = league["name"]
     logo = league.get("league_logo", "")
-    print(f"   ⏳ Results → {name} ...")
 
     await page.goto(league["results_url"], wait_until="domcontentloaded", timeout=60000)
-    await asyncio.sleep(3)
+    try:
+        await page.wait_for_selector("div.matches-week-title, a.ajax-match-item", timeout=15000)
+    except Exception:
+        pass
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
@@ -516,7 +520,7 @@ async def scrape_results(page, league: dict) -> list:
                 "url": href
             })
         except Exception:
-            continue
+            pass
 
     return results
 
@@ -526,10 +530,12 @@ async def scrape_standings(page, league: dict) -> dict:
 
     name = league["name"]
     logo = league.get("league_logo", "")
-    print(f"   ⏳ Standings → {name} ...")
 
     await page.goto(league["standings_url"], wait_until="domcontentloaded", timeout=60000)
-    await asyncio.sleep(3)
+    try:
+        await page.wait_for_selector("div.collapse-item-wrap.groups-item, div.ranking-table", timeout=15000)
+    except Exception:
+        pass
 
     group_containers = await page.query_selector_all("div.collapse-item-wrap.groups-item")
     if group_containers and len(group_containers) >= 2:
@@ -546,7 +552,7 @@ async def scrape_standings(page, league: dict) -> dict:
                 if teams:
                     groups.append({"group": gn, "teams": teams})
             except Exception:
-                continue
+                pass
         return {"type": "grouped", "groups": groups} if groups else {}
     else:
         rt_el = (await page.query_selector("div.ranking-table div.tab-pos-rank.rank_all")
@@ -590,7 +596,7 @@ async def _parse_rank_rows(rows) -> list:
                 "points":  (await (await _get("div.rank-col.points")).inner_text()).strip()
             })
         except Exception:
-            continue
+            pass
     return table
 
 # ---------------------------------------------------------------------------
@@ -599,7 +605,6 @@ async def _parse_rank_rows(rows) -> list:
 async def scrape_league(context, league: dict) -> None:
     page = await context.new_page()
     try:
-        print(f"\n🔄 {league['name']}")
         fixtures  = await scrape_fixtures(page, league)
         results   = await scrape_results(page, league)
         standings = await scrape_standings(page, league)
@@ -611,8 +616,8 @@ async def scrape_league(context, league: dict) -> None:
             "results":     results,
             "standings":   standings,
         })
-    except Exception as e:
-        print(f"   ❌ Error in {league['name']}: {e}")
+    except Exception:
+        pass
     finally:
         await page.close()
 
@@ -626,7 +631,6 @@ async def main() -> None:
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         
-        # FIX: Forcing Africa/Tunis natively renders website in your exact timezone, resolving the 1 hour offset
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
             timezone_id="Africa/Tunis",
@@ -644,10 +648,4 @@ async def main() -> None:
     print("\n" + "=" * 40)
     print("📊 FINAL SCRAPE SUMMARY:")
     print("=" * 40)
-    for doc, info in DEBUG_STATS.items():
-        print(f"  {doc.ljust(30)} : {info}")
-    print("=" * 40)
-    print("🎉 Done!")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    for doc, info in DEBUG_STATS.
