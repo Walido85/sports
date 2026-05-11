@@ -152,17 +152,38 @@ async def scrape_league(context, league):
                     const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
                     const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
                     
-                    // Traverse DOM to find the Date / Round Header
+                    // Traverse DOM upwards to find the specific Date Header
                     let matchDate = "";
-                    let pSibling = row.parentElement?.previousElementSibling;
-                    while(pSibling) {
-                        let text = pSibling.innerText.trim().split('\\n')[0];
-                        // If it's a short text and doesn't contain match score characters
-                        if (text && text.length > 2 && text.length < 25 && !text.includes(':')) {
-                            matchDate = text;
-                            break;
+                    let currentElement = row;
+                    const ignoreList = ['fixtures', 'results', 'matches', 'table', 'overview', 'news', 'all', 'home', 'away'];
+
+                    while(currentElement && currentElement !== document.body) {
+                        let pSibling = currentElement.previousElementSibling;
+                        while(pSibling) {
+                            let text = pSibling.innerText.trim().split('\\n')[0];
+                            const lowerText = text.toLowerCase();
+                            
+                            // Check if the text looks like a valid date header and NOT a UI tab
+                            if (text && text.length >= 3 && text.length <= 30 && !text.includes(':') && !ignoreList.includes(lowerText)) {
+                                if (lowerText === 'today') {
+                                    matchDate = todayStr;
+                                } else if (lowerText === 'yesterday') {
+                                    let d = new Date(); 
+                                    d.setDate(d.getDate() - 1);
+                                    matchDate = d.toISOString().split('T')[0];
+                                } else if (lowerText === 'tomorrow') {
+                                    let d = new Date(); 
+                                    d.setDate(d.getDate() + 1);
+                                    matchDate = d.toISOString().split('T')[0];
+                                } else {
+                                    matchDate = text;
+                                }
+                                break;
+                            }
+                            pSibling = pSibling.previousElementSibling;
                         }
-                        pSibling = pSibling.previousElementSibling;
+                        if (matchDate) break;
+                        currentElement = currentElement.parentElement;
                     }
                     
                     const matchObj = {
