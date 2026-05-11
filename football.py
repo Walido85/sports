@@ -22,14 +22,14 @@ db = firestore.Client(project="tunisia-radios-d7aa8", credentials=credentials, d
 print("✅ Firestore connected")
 
 LEAGUES = [
-    {"name": "Tunisia Ligue 1", "url": "https://www.livescore.com/en/football/tunisia/ligue-i/"},
-    {"name": "Premier League", "url": "https://www.livescore.com/en/football/england/premier-league/"},
-    {"name": "LaLiga", "url": "https://www.livescore.com/en/football/spain/laliga/"},
-    {"name": "Serie A", "url": "https://www.livescore.com/en/football/italy/serie-a/"},
-    {"name": "Bundesliga", "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
-    {"name": "Ligue 1", "url": "https://www.livescore.com/en/football/france/ligue-1/"},
-    {"name": "UEFA Champions League", "url": "https://www.livescore.com/en/football/champions-league/"},
-    {"name": "CAF Champions League", "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
+    {"name": "Tunisia Ligue 1",       "url": "https://www.livescore.com/en/football/tunisia/ligue-i/"},
+    {"name": "Premier League",         "url": "https://www.livescore.com/en/football/england/premier-league/"},
+    {"name": "LaLiga",                 "url": "https://www.livescore.com/en/football/spain/laliga/"},
+    {"name": "Serie A",                "url": "https://www.livescore.com/en/football/italy/serie-a/"},
+    {"name": "Bundesliga",             "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
+    {"name": "Ligue 1",                "url": "https://www.livescore.com/en/football/france/ligue-1/"},
+    {"name": "UEFA Champions League",  "url": "https://www.livescore.com/en/football/europe/champions-league/"},
+    {"name": "CAF Champions League",   "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
 ]
 
 LIVE_JS = """() => {
@@ -95,17 +95,35 @@ MATCHES_JS = """() => {
 }"""
 
 STANDINGS_JS = """() => {
-    const table = [];
-    const rows = document.querySelectorAll('div[data-id^="rw-"]');
-    for (const row of rows) {
-        const rowId = row.getAttribute('data-id');
-        const teamId = rowId.replace('rw-', '');
-        if (!row.querySelector('div[data-id="c-nm"]')) continue;
-        const posEl = row.querySelector('div[data-id="c-pos"]');
+    const groups = [];
+    let currentGroup = null;
+
+    const allNodes = document.querySelectorAll('div[data-id]');
+    for (const node of allNodes) {
+        const did = node.getAttribute('data-id') || "";
+
+        // Detect group/section header
+        if (did.includes("st-hdr") || did.includes("stg-hdr") || did.includes("grp-hdr") || did.includes("lt-tb-")) {
+            const headerText = node.innerText?.trim();
+            if (headerText && headerText.length < 50 && !headerText.includes("P") && !headerText.includes("Pts")) {
+                // Likely a group name like "Group A"
+                currentGroup = { name: headerText, table: [] };
+                groups.push(currentGroup);
+            }
+            continue;
+        }
+
+        if (!did.startsWith('rw-')) continue;
+
+        const teamId = did.replace('rw-', '');
+        if (!node.querySelector('div[data-id="c-nm"]')) continue;
+
+        const posEl = node.querySelector('div[data-id="c-pos"]');
         let posText = posEl?.innerText?.trim() || "";
         const posMatch = posText.match(/\\d+/);
         const pos = posMatch ? posMatch[0] : posText;
-        const teamLink = row.querySelector('div[data-id="c-nm"] a.ux');
+
+        const teamLink = node.querySelector('div[data-id="c-nm"] a.ux');
         if (!teamLink) continue;
         const teamName = teamLink.innerText?.trim() || "";
         const teamLogo = teamLink.querySelector('div.vx img')?.src || "";
@@ -115,9 +133,9 @@ STANDINGS_JS = """() => {
         const allTeamDivs = document.querySelectorAll('div[data-id^="' + teamId + '_"]');
         let foundSuffix = "";
         for (const d of allTeamDivs) {
-            const did = d.getAttribute('data-id');
-            if (did.endsWith('_played')) {
-                foundSuffix = did.replace(teamId + '_', '').replace('_played', '');
+            const tdid = d.getAttribute('data-id');
+            if (tdid.endsWith('_played')) {
+                foundSuffix = tdid.replace(teamId + '_', '').replace('_played', '');
                 break;
             }
         }
@@ -132,31 +150,44 @@ STANDINGS_JS = """() => {
             pts    = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_points"]')?.innerText?.trim() || "0";
         }
 
-        if (!table.some(t => t.team === teamName)) {
-            table.push({
-                position: pos, team: teamName, team_logo: teamLogo,
-                played, wins, draws, losses,
-                goals_for: gf, goals_against: ga, goal_diff: gd, points: pts
-            });
+        const entry = {
+            position: pos, team: teamName, team_logo: teamLogo,
+            played, wins, draws, losses,
+            goals_for: gf, goals_against: ga, goal_diff: gd, points: pts
+        };
+
+        if (!currentGroup) {
+            currentGroup = { name: "Table", table: [] };
+            groups.push(currentGroup);
+        }
+        if (!currentGroup.table.some(t => t.team === teamName)) {
+            currentGroup.table.push(entry);
         }
     }
-    return table;
+
+    // If only one group named "Table", return as single
+    if (groups.length === 1 && groups[0].name === "Table") {
+        return { type: "single", table: groups[0].table };
+    }
+    if (groups.length > 1) {
+        return { type: "groups", groups: groups };
+    }
+    return { type: "single", table: [] };
 }"""
 
 
 async def scrape_all_live(context):
     page = await context.new_page()
-    print("▶ Scraping Global LIVE matches...")
     live_matches = []
     try:
         await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
         try:
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
         except:
-            print("ℹ️ No live matches at this exact moment.")
+            pass
         live_matches = await page.evaluate(LIVE_JS)
     except Exception as e:
-        print(f"❌ Error scraping Live: {e}")
+        print(f"❌ Live scrape error: {e}")
     finally:
         await page.close()
 
@@ -165,19 +196,18 @@ async def scrape_all_live(context):
         "count": len(live_matches),
         "updated_at": datetime.now(timezone.utc).isoformat()
     })
-    print(f"✅ Saved 'live': {len(live_matches)} matches")
+    print(f"✅ live: {len(live_matches)} matches")
 
 
 async def scrape_league(context, league):
     page = await context.new_page()
     name = league["name"]
     url = league["url"]
-    standings_url = url + "standings/" if not url.endswith("standings/") else url
+    standings_url = url + "standings/"
 
-    print(f"▶ Processing {name}...")
     fixtures = []
     results = []
-    standings = []
+    standings = {}
     league_logo = ""
 
     try:
@@ -199,27 +229,30 @@ async def scrape_league(context, league):
             fixtures = data.get("fixtures", [])
             results = data.get("results", [])
         except Exception:
-            print(f"⚠️ No matches found for {name}")
+            pass
 
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
             await page.wait_for_selector('div[data-id^="rw-"]', timeout=15000)
             standings = await page.evaluate(STANDINGS_JS)
         except Exception:
-            print(f"⚠️ No standings found for {name}")
+            pass
 
         db.collection("football").document(name).set({
             "league": name,
             "league_logo": league_logo,
             "fixtures": fixtures,
             "results": results,
-            "standings": {"type": "single", "table": standings} if standings else {},
+            "standings": standings,
             "updated_at": datetime.now(timezone.utc).isoformat()
         })
-        print(f"✅ Saved {name}: {len(fixtures)} Fix | {len(results)} Res | {len(standings)} Teams in Table")
+
+        teams = standings.get("table", standings.get("groups", []))
+        team_count = len(teams) if isinstance(teams, list) and standings.get("type") == "single" else sum(len(g.get("table", [])) for g in teams) if isinstance(teams, list) else 0
+        print(f"✅ {name}: {len(fixtures)} Fix | {len(results)} Res | {team_count} Teams")
 
     except Exception as e:
-        print(f"❌ Error processing {name}: {e}")
+        print(f"❌ {name}: {e}")
     finally:
         await page.close()
 
