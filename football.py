@@ -16,16 +16,15 @@ UTC_TZ = ZoneInfo("UTC")
 
 sys.stdout.reconfigure(line_buffering=True)
 
-DEBUG_STATS = {}
-
 firebase_secret = os.environ.get("FIREBASE_CREDENTIALS")
 if not firebase_secret:
     print("❌ No FIREBASE_CREDENTIALS found.")
-    exit(1)
+    sys.exit(1)
 
 cred_dict = json.loads(firebase_secret)
 credentials = service_account.Credentials.from_service_account_info(cred_dict)
 db = firestore.Client(project="tunisia-radios-d7aa8", credentials=credentials, database="(default)")
+print("✅ Firestore connected → collection 'football'")
 
 LEAGUES = [
     {
@@ -190,7 +189,7 @@ def parse_and_convert_time(date_str: str, time_str: str, server_tz: str) -> tupl
         dt_utc = dt_aware.astimezone(UTC_TZ)
 
         return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), dt_tunis.strftime("%H:%M")
-    except Exception:
+    except Exception as e:
         return "", time_str
 
 def parse_date_from_text(text: str) -> str:
@@ -208,7 +207,7 @@ def save_league(name: str, data: dict) -> None:
     fixtures_count = len(data.get("fixtures", []))
     results_count = len(data.get("results", []))
     standings_count = len(data.get("standings", {}).get("table", data.get("standings", {}).get("groups", [])))
-    DEBUG_STATS[name] = f"fixtures={fixtures_count} results={results_count} standings={standings_count}"
+    print(f"✅ Saved '{name}' (Fixtures: {fixtures_count}, Results: {results_count}, Standings: {standings_count})")
 
 def save_live(matches: list) -> None:
     db.collection("football").document("live").set({
@@ -216,7 +215,7 @@ def save_live(matches: list) -> None:
         "count": len(matches),
         "updated_at": datetime.utcnow().isoformat()
     })
-    DEBUG_STATS["LIVE"] = f"matches={len(matches)}"
+    print(f"✅ Saved 'LIVE' ({len(matches)} matches)")
 
 async def scrape_match_events(context, match_url: str) -> list:
     events = []
@@ -261,36 +260,33 @@ async def scrape_match_events(context, match_url: str) -> list:
                 if not event_type:
                     continue
 
-                event = {
+                events.append({
                     "type": event_type,
                     "player": player_a,
                     "player_image": player_img,
                     "player_link": player_link,
                     "minute": min_attr,
-                    "side": side
-                }
-                if event_type == "goal":
-                    event["assist"] = player_s
-                    event["assist_image"] = player_s_img
-                elif event_type == "substitution":
-                    event["player_out"] = player_s
-
-                events.append(event)
+                    "side": side,
+                    "assist": player_s if event_type == "goal" else "",
+                    "assist_image": player_s_img if event_type == "goal" else "",
+                    "player_out": player_s if event_type == "substitution" else ""
+                })
             except Exception:
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Events error ({match_url}): {e}")
     finally:
         await page.close()
     return events
 
 async def scrape_live(page, context) -> list:
+    print("▶ Scraping LIVE matches...")
     await page.goto("https://www.ysscores.com/ar/today_matches", wait_until="domcontentloaded", timeout=60000)
     
     try:
         await page.wait_for_selector("div.matches-wrapper", timeout=15000)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ Live selector wait error: {e}")
         
     await page.wait_for_timeout(3000)
 
@@ -377,9 +373,9 @@ async def scrape_live(page, context) -> list:
                         "url": href
                     })
                 except Exception:
-                    pass
+                    continue
         except Exception:
-            pass
+            continue
 
     all_live = []
     if live_matches_raw:
@@ -456,7 +452,7 @@ async def scrape_fixtures(page, league: dict) -> list:
                 "url": href
             })
         except Exception:
-            pass
+            continue
 
     return fixtures
 
@@ -518,7 +514,7 @@ async def scrape_results(page, league: dict) -> list:
                 "url": href
             })
         except Exception:
-            pass
+            continue
 
     return results
 
@@ -547,7 +543,7 @@ async def scrape_standings(page, league: dict) -> dict:
                 if teams:
                     groups.append({"group": gn, "teams": teams})
             except Exception:
-                pass
+                continue
         return {"type": "grouped", "groups": groups} if groups else {}
     else:
         rt_el = (await page.query_selector("div.ranking-table div.tab-pos-rank.rank_all")
@@ -591,12 +587,13 @@ async def _parse_rank_rows(rows) -> list:
                 "points":  (await (await _get("div.rank-col.points")).inner_text()).strip()
             })
         except Exception:
-            pass
+            continue
     return table
 
 async def scrape_league(context, league: dict) -> None:
     page = await context.new_page()
     try:
+        print(f"▶ Scraping {league['name']}...")
         fixtures  = await scrape_fixtures(page, league)
         results   = await scrape_results(page, league)
         standings = await scrape_standings(page, league)
@@ -608,8 +605,8 @@ async def scrape_league(context, league: dict) -> None:
             "results":     results,
             "standings":   standings,
         })
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"❌ Error in {league['name']}: {e}")
     finally:
         await page.close()
 
