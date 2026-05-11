@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -45,14 +46,12 @@ async def scrape_all_live(context):
     try:
         await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
         
-        # Wait for matches to load, but don't crash if there are zero live games right now
         try:
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
         except:
             print("ℹ️ No live matches at this exact moment.")
             pass
 
-        # Use JS evaluate for speed and to grab the league header associated with each match
         live_matches = await page.evaluate('''() => {
             const matches = [];
             const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
@@ -60,7 +59,6 @@ async def scrape_all_live(context):
             for (const row of rows) {
                 const statusText = row.querySelector('span[data-id*="st-tm"]')?.innerText.trim() || "";
                 
-                // Only grab games that are actively playing (skip FT, Canc, etc if they linger)
                 if (statusText === "FT" || statusText.includes("Canc") || statusText.includes("Postp") || statusText.includes(":")) {
                     continue;
                 }
@@ -74,7 +72,6 @@ async def scrape_all_live(context):
                 const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
                 const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
                 
-                // Find the closest league header for this match
                 const container = row.closest('div[data-index]');
                 const leagueName = container ? (container.querySelector('div[data-id="st-hdr_stg"]')?.innerText.trim() || "Unknown") : "Unknown";
                 const leagueLogo = container ? (container.querySelector('div.qg img')?.src || "") : "";
@@ -99,7 +96,6 @@ async def scrape_all_live(context):
     finally:
         await page.close()
 
-    # Save globally to 'live' document
     db.collection("football").document("live").set({
         "matches": live_matches,
         "count": len(live_matches),
@@ -112,7 +108,8 @@ async def scrape_league(context, league):
     page = await context.new_page()
     name = league["name"]
     url = league["url"]
-    standings_url = url + "table/" if not url.endswith("table/") else url
+    # LiveScore uses /standings/ for the league page table
+    standings_url = url + "standings/" if not url.endswith("standings/") else url
     
     print(f"▶ Processing {name}...")
     
@@ -121,18 +118,16 @@ async def scrape_league(context, league):
     standings = []
     league_logo = ""
 
-    # 1. Scrape Matches (Fixtures & Results only, Live handled separately)
+    # 1. Scrape Matches
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
-        # Get League Logo
         try:
             logo_el = await page.wait_for_selector("div.qg img", timeout=5000)
             league_logo = await logo_el.get_attribute("src") if logo_el else ""
         except:
             pass
 
-        # Wait for matches, ignore timeout if cup/league has no games scheduled right now
         try:
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
             data = await page.evaluate('''() => {
@@ -167,7 +162,6 @@ async def scrape_league(context, league):
                         matchObj.time = statusText;
                         fix.push(matchObj);
                     }
-                    // Live matches skipped here as they are handled in global live scraper
                 }
                 return { fixtures: fix, results: res };
             }''')
@@ -176,46 +170,58 @@ async def scrape_league(context, league):
         except Exception:
             print(f"⚠️ No matches found for {name}")
 
-        # 2. Scrape Standings Table (Restricted to "All" tab to prevent duplication)
+        # 2. Scrape Standings Table
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
-            # Wait for specific "All" table wrapper
-            await page.wait_for_selector('div[data-id="lt-tb-all"] div.nj[data-id^="rw-"]', timeout=10000)
+            await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=10000)
             standings = await page.evaluate('''() => {
                 const table = [];
-                // STRICTLY target the 'All' tab to stop duplicating 40+ teams
-                const rows = document.querySelectorAll('div[data-id="lt-tb-all"] div.nj[data-id^="rw-"]');
+                // Find rows that have a team name (c-nm)
+                const nameRows = Array.from(document.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
                 
-                for (const row of rows) {
+                for (const row of nameRows) {
+                    const rowId = row.getAttribute('data-id'); // e.g. rw-4556
+                    
                     let posText = row.querySelector('div[data-id="c-pos"]')?.innerText.trim() || "";
                     const match = posText.match(/\\d+/);
                     const pos = match ? match[0] : posText;
                     
                     const teamName = row.querySelector('div[data-id="c-nm"]')?.innerText.trim() || "";
-                    const teamLogo = row.querySelector('div[data-id="c-nm"] img')?.src || "";
+                    const teamLogo = row.querySelector('img')?.src || "";
                     
                     if (!teamName) continue;
-
-                    table.push({
-                        position: pos,
-                        team: teamName,
-                        team_logo: teamLogo,
-                        played: row.querySelector('div[data-id$="_played"]')?.innerText.trim() || "0",
-                        wins: row.querySelector('div[data-id$="_wins"]')?.innerText.trim() || "0",
-                        draws: row.querySelector('div[data-id$="_draws"]')?.innerText.trim() || "0",
-                        losses: row.querySelector('div[data-id$="_losses"]')?.innerText.trim() || "0",
-                        goals_for: row.querySelector('div[data-id$="_goalsFor"]')?.innerText.trim() || "0",
-                        goals_against: row.querySelector('div[data-id$="_goalsAgainst"]')?.innerText.trim() || "0",
-                        goal_diff: row.querySelector('div[data-id$="_goalsDiff"]')?.innerText.trim() || "0",
-                        points: row.querySelector('div[data-id$="_points"]')?.innerText.trim() || "0"
-                    });
+                    
+                    // Find the sibling row with the same ID that holds the stats
+                    const statsRows = Array.from(document.querySelectorAll(`div.nj[data-id="${rowId}"]`));
+                    const statsRow = statsRows.find(r => r.querySelector('div[data-id$="_played"]'));
+                    
+                    let played="0", wins="0", draws="0", losses="0", gf="0", ga="0", gd="0", pts="0";
+                    if (statsRow) {
+                        played = statsRow.querySelector('div[data-id$="_played"]')?.innerText.trim() || "0";
+                        wins = statsRow.querySelector('div[data-id$="_wins"]')?.innerText.trim() || "0";
+                        draws = statsRow.querySelector('div[data-id$="_draws"]')?.innerText.trim() || "0";
+                        losses = statsRow.querySelector('div[data-id$="_losses"]')?.innerText.trim() || "0";
+                        gf = statsRow.querySelector('div[data-id$="_goalsFor"]')?.innerText.trim() || "0";
+                        ga = statsRow.querySelector('div[data-id$="_goalsAgainst"]')?.innerText.trim() || "0";
+                        gd = statsRow.querySelector('div[data-id$="_goalsDiff"]')?.innerText.trim() || "0";
+                        pts = statsRow.querySelector('div[data-id$="_points"]')?.innerText.trim() || "0";
+                    }
+                    
+                    // Only add if team isn't already in the list (prevents duplicates from home/away tabs)
+                    if (!table.some(t => t.team === teamName)) {
+                        table.push({
+                            position: pos,
+                            team: teamName,
+                            team_logo: teamLogo,
+                            played, wins, draws, losses, goals_for: gf, goals_against: ga, goal_diff: gd, points: pts
+                        });
+                    }
                 }
                 return table;
             }''')
         except Exception:
             print(f"⚠️ No standings found for {name}")
 
-        # Save League Document
         db.collection("football").document(name).set({
             "league": name,
             "league_logo": league_logo,
@@ -238,19 +244,19 @@ async def main():
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         
-        # Enforce Tunis Timezone so HH:MM fixtures match local time
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             timezone_id="Africa/Tunis",
             locale="en-GB"
         )
         
-        # 1. Scrape Global Live Matches
+        # Scrape Global Live Matches first
         await scrape_all_live(context)
 
-        # 2. Scrape Individual Leagues
-        await asyncio.gather(*[scrape_league(context, l) for l in LEAGUES])
-        
+        # Scrape Individual Leagues sequentially
+        for league in LEAGUES:
+            await scrape_league(context, league)
+            
         await browser.close()
 
 if __name__ == "__main__":
