@@ -16,6 +16,8 @@ UTC_TZ = ZoneInfo("UTC")
 
 sys.stdout.reconfigure(line_buffering=True)
 
+DEBUG_STATS = {}
+
 firebase_secret = os.environ.get("FIREBASE_CREDENTIALS")
 if not firebase_secret:
     print("❌ No FIREBASE_CREDENTIALS found.")
@@ -30,83 +32,83 @@ LEAGUES = [
     {
         "key": "tunisia_ligue1",
         "name": "Tunisia Ligue 1",
-        "aliases": ["tunisian professional league", "tunisia ligue 1", "ligue professionnelle 1", "الرابطة التونسية"],
+        "aliases": ["tunisian professional league", "tunisia ligue 1", "ligue professionnelle 1"],
         "league_logo": "https://imgs.ysscores.com/championship/48/7731690383928.png",
-        "url": "https://www.ysscores.com/ar/championship/76040/Tunisian-Professional-League-1",
-        "standings_url": "https://www.ysscores.com/ar/rank/901568/Tunisian-Professional-League-1",
-        "results_url": "https://www.ysscores.com/ar/championship/76040/Tunisian-Professional-League-1-statics"
+        "url": "https://www.ysscores.com/en/championship/76040/Tunisian-Professional-League-1",
+        "standings_url": "https://www.ysscores.com/en/rank/901568/Tunisian-Professional-League-1",
+        "results_url": "https://www.ysscores.com/en/championship/76040/Tunisian-Professional-League-1-statics"
     },
     {
         "key": "tunisia_cup",
         "name": "Tunisia Cup",
-        "aliases": ["tunisian cup", "tunisia cup", "coupe de tunisie", "كأس تونس"],
+        "aliases": ["tunisian cup", "tunisia cup", "coupe de tunisie"],
         "league_logo": "https://imgs.ysscores.com/championship/48/6601696547585.png",
-        "url": "https://www.ysscores.com/ar/championship/533123/Tunisian-Cup",
+        "url": "https://www.ysscores.com/en/championship/533123/Tunisian-Cup",
         "standings_url": None,
-        "results_url": "https://www.ysscores.com/ar/championship/533123/Tunisian-Cup-statics"
+        "results_url": "https://www.ysscores.com/en/championship/533123/Tunisian-Cup-statics"
     },
     {
         "key": "premier_league",
         "name": "Premier League",
-        "aliases": ["premier league", "english premier league", "epl", "الدوري الإنجليزي"],
+        "aliases": ["premier league", "english premier league", "epl"],
         "league_logo": "https://imgs.ysscores.com/championship/48/3411694791422.png",
-        "url": "https://www.ysscores.com/ar/championship/6811/Premier-League",
-        "standings_url": "https://www.ysscores.com/ar/championship/6811/Premier-League-rank",
-        "results_url": "https://www.ysscores.com/ar/championship/6811/Premier-League-statics"
+        "url": "https://www.ysscores.com/en/championship/6811/Premier-League",
+        "standings_url": "https://www.ysscores.com/en/championship/6811/Premier-League-rank",
+        "results_url": "https://www.ysscores.com/en/championship/6811/Premier-League-statics"
     },
     {
         "key": "serie_a",
         "name": "Serie A",
-        "aliases": ["serie a", "italian serie a", "serie a tim", "الدوري الإيطالي"],
+        "aliases": ["serie a", "italian serie a", "serie a tim"],
         "league_logo": "https://imgs.ysscores.com/championship/48/6281692568873.png",
-        "url": "https://www.ysscores.com/ar/championship/3734/Serie-A",
-        "standings_url": "https://www.ysscores.com/ar/championship/3734/Serie-A-rank",
-        "results_url": "https://www.ysscores.com/ar/championship/3734/Serie-A-statics"
+        "url": "https://www.ysscores.com/en/championship/3734/Serie-A",
+        "standings_url": "https://www.ysscores.com/en/championship/3734/Serie-A-rank",
+        "results_url": "https://www.ysscores.com/en/championship/3734/Serie-A-statics"
     },
     {
         "key": "la_liga",
         "name": "La Liga",
-        "aliases": ["laliga", "la liga", "spanish la liga", "primera division", "الدوري الإسباني"],
+        "aliases": ["laliga", "la liga", "spanish la liga", "primera division", "liga española"],
         "league_logo": "https://imgs.ysscores.com/championship/48/17656566406099.png",
-        "url": "https://www.ysscores.com/ar/championship/1933/LaLiga",
-        "standings_url": "https://www.ysscores.com/ar/championship/1933/LaLiga-rank",
-        "results_url": "https://www.ysscores.com/ar/championship/1933/LaLiga-statics"
+        "url": "https://www.ysscores.com/en/championship/1933/LaLiga",
+        "standings_url": "https://www.ysscores.com/en/championship/1933/LaLiga-rank",
+        "results_url": "https://www.ysscores.com/en/championship/1933/LaLiga-statics"
     },
     {
         "key": "ligue_1",
         "name": "Ligue 1",
-        "aliases": ["ligue 1", "french ligue 1", "ligue 1 mcdonald", "الدوري الفرنسي"],
+        "aliases": ["ligue 1", "french ligue 1", "ligue 1 mcdonald", "ligue 1 uber", "ligue1"],
         "league_logo": "https://imgs.ysscores.com/championship/48/4371694791523.png",
-        "url": "https://www.ysscores.com/ar/championship/1985/Ligue-1",
-        "standings_url": "https://www.ysscores.com/ar/championship/1985/Ligue-1-rank",
-        "results_url": "https://www.ysscores.com/ar/championship/1985/Ligue-1-statics"
+        "url": "https://www.ysscores.com/en/championship/1985/Ligue-1",
+        "standings_url": "https://www.ysscores.com/en/championship/1985/Ligue-1-rank",
+        "results_url": "https://www.ysscores.com/en/championship/1985/Ligue-1-statics"
     },
     {
         "key": "bundesliga",
         "name": "Bundesliga",
-        "aliases": ["bundesliga", "german bundesliga", "1. bundesliga", "الدوري الألماني"],
+        "aliases": ["bundesliga", "german bundesliga", "1. bundesliga"],
         "league_logo": "https://imgs.ysscores.com/championship/48/17693689565274.png",
-        "url": "https://www.ysscores.com/ar/championship/2606/Bundesliga",
-        "standings_url": "https://www.ysscores.com/ar/championship/2606/Bundesliga-rank",
-        "results_url": "https://www.ysscores.com/ar/championship/2606/Bundesliga-statics"
+        "url": "https://www.ysscores.com/en/championship/2606/Bundesliga",
+        "standings_url": "https://www.ysscores.com/en/championship/2606/Bundesliga-rank",
+        "results_url": "https://www.ysscores.com/en/championship/2606/Bundesliga-statics"
     },
     {
         "key": "uefa_champions_league",
         "name": "UEFA Champions League",
-        "aliases": ["uefa champions league", "champions league", "ucl", "دوري أبطال أوروبا"],
+        "aliases": ["uefa champions league", "champions league", "ucl"],
         "league_logo": "https://imgs.ysscores.com/championship/48/1191723239247.png",
-        "url": "https://www.ysscores.com/ar/championship/12048/UEFA-Champions-League",
-        "standings_url": "https://www.ysscores.com/ar/rank/904988/UEFA-Champions-League",
-        "results_url": "https://www.ysscores.com/ar/championship/12048/UEFA-Champions-League-statics"
+        "url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League",
+        "standings_url": "https://www.ysscores.com/en/rank/904988/UEFA-Champions-League",
+        "results_url": "https://www.ysscores.com/en/championship/12048/UEFA-Champions-League-statics"
     },
     {
         "key": "caf_champions_league",
         "name": "CAF Champions League",
-        "aliases": ["caf champions league", "caf cl", "دوري أبطال أفريقيا"],
+        "aliases": ["caf champions league", "caf cl", "total energies caf"],
         "league_logo": "https://imgs.ysscores.com/championship/48/4661694112676.png",
-        "url": "https://www.ysscores.com/ar/championship/77783/CAF-Champions-League",
-        "standings_url": "https://www.ysscores.com/ar/rank/911131/CAF-Champions-League",
-        "results_url": "https://www.ysscores.com/ar/championship/77783/CAF-Champions-League-statics"
+        "url": "https://www.ysscores.com/en/championship/77783/CAF-Champions-League",
+        "standings_url": "https://www.ysscores.com/en/rank/911131/CAF-Champions-League",
+        "results_url": "https://www.ysscores.com/en/championship/77783/CAF-Champions-League-statics"
     }
 ]
 
@@ -123,14 +125,12 @@ def classify_status(result_text: str, css_classes: str) -> str:
     c = css_classes.lower()
     if "live" in c or "active" in c or "progress" in c:
         return "live"
-    if "ended" in t or "ft" in t or "نهاية" in t or "انتهت" in t or re.search(r'\d+\s*-\s*\d+', t):
+    if "ended" in t or "ft" in t or "final" in t or re.search(r'\d+\s*-\s*\d+', t):
         return "result"
     return "fixture"
 
 def parse_time_24h(raw_text: str) -> str:
-    text = raw_text.strip().replace("م", " PM").replace("ص", " AM")
-    text = re.sub(r'\s+', ' ', text)
-    
+    text = raw_text.strip()
     m = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM)?', text, re.IGNORECASE)
     if m:
         hour = int(m.group(1))
@@ -141,7 +141,6 @@ def parse_time_24h(raw_text: str) -> str:
         elif ampm == "AM" and hour == 12:
             hour = 0
         return f"{hour:02d}:{minute}"
-    
     m24 = re.search(r'([0-2]?\d):([0-5]\d)', text)
     if m24:
         return f"{int(m24.group(1)):02d}:{m24.group(2)}"
@@ -171,14 +170,7 @@ def parse_and_convert_time(date_str: str, time_str: str, server_tz: str) -> tupl
 
         dt_naive = datetime.strptime(f"{date_part} {parsed_24h}", "%Y-%m-%d %H:%M")
 
-        safe_server_tz = "Europe/Rome"
-        if server_tz:
-            if "KSA" in server_tz or "السعودية" in server_tz:
-                safe_server_tz = "Asia/Riyadh"
-            elif "UTC" in server_tz or "العالمي" in server_tz:
-                safe_server_tz = "UTC"
-            else:
-                safe_server_tz = server_tz
+        safe_server_tz = server_tz if server_tz else "Europe/Rome"
 
         try:
             dt_aware = dt_naive.replace(tzinfo=ZoneInfo(safe_server_tz))
@@ -189,14 +181,14 @@ def parse_and_convert_time(date_str: str, time_str: str, server_tz: str) -> tupl
         dt_utc = dt_aware.astimezone(UTC_TZ)
 
         return dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), dt_tunis.strftime("%H:%M")
-    except Exception as e:
+    except Exception:
         return "", time_str
 
 def parse_date_from_text(text: str) -> str:
-    cleaned = re.sub(r'\d{1,2}:\d{2}\s*(?:am|pm|ص|م)?', '', text, flags=re.IGNORECASE).strip()
-    if "today" in cleaned.lower() or "اليوم" in cleaned:
+    cleaned = re.sub(r'\d{1,2}:\d{2}\s*(?:am|pm)?', '', text, flags=re.IGNORECASE).strip()
+    if "today" in cleaned.lower():
         return datetime.now(TUNIS_TZ).strftime("%d-%m-%Y")
-    if "tomorrow" in cleaned.lower() or "غدا" in cleaned:
+    if "tomorrow" in cleaned.lower():
         return (datetime.now(TUNIS_TZ) + timedelta(days=1)).strftime("%d-%m-%Y")
     m = re.search(r'\d{1,2}-\d{1,2}-\d{2,4}', cleaned)
     return m.group(0) if m else ""
@@ -204,10 +196,13 @@ def parse_date_from_text(text: str) -> str:
 def save_league(name: str, data: dict) -> None:
     data["updated_at"] = datetime.utcnow().isoformat()
     db.collection("football").document(name).set(data)
+    
     fixtures_count = len(data.get("fixtures", []))
     results_count = len(data.get("results", []))
-    standings_count = len(data.get("standings", {}).get("table", data.get("standings", {}).get("groups", [])))
-    print(f"✅ Saved '{name}' (Fixtures: {fixtures_count}, Results: {results_count}, Standings: {standings_count})")
+    standings = data.get("standings", {})
+    standings_count = len(standings.get("table", standings.get("groups", [])))
+    
+    DEBUG_STATS[name] = f"fixtures={fixtures_count} results={results_count} standings={standings_count}"
 
 def save_live(matches: list) -> None:
     db.collection("football").document("live").set({
@@ -215,7 +210,7 @@ def save_live(matches: list) -> None:
         "count": len(matches),
         "updated_at": datetime.utcnow().isoformat()
     })
-    print(f"✅ Saved 'LIVE' ({len(matches)} matches)")
+    DEBUG_STATS["LIVE"] = f"matches={len(matches)}"
 
 async def scrape_match_events(context, match_url: str) -> list:
     events = []
@@ -273,22 +268,15 @@ async def scrape_match_events(context, match_url: str) -> list:
                 })
             except Exception:
                 continue
-    except Exception as e:
-        print(f"⚠️ Events error ({match_url}): {e}")
+    except Exception:
+        pass
     finally:
         await page.close()
     return events
 
 async def scrape_live(page, context) -> list:
-    print("▶ Scraping LIVE matches...")
-    await page.goto("https://www.ysscores.com/ar/today_matches", wait_until="domcontentloaded", timeout=60000)
-    
-    try:
-        await page.wait_for_selector("div.matches-wrapper", timeout=15000)
-    except Exception as e:
-        print(f"⚠️ Live selector wait error: {e}")
-        
-    await page.wait_for_timeout(3000)
+    await page.goto("https://www.ysscores.com/en/today_matches", wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(5000)
 
     wrappers = await page.query_selector_all("div.matches-wrapper")
     live_matches_raw = []
@@ -351,6 +339,11 @@ async def scrape_live(page, context) -> list:
                                 extra_txt = (await extra_el.inner_text()).strip()
                                 if extra_txt and extra_txt not in ["0:0", "00:00", "0", ""]:
                                     minute += f" + {extra_txt}"
+                    
+                    if not minute:
+                        min_fallback = await el.query_selector(".match-time-status")
+                        if min_fallback:
+                            minute = (await min_fallback.inner_text()).strip()
 
                     href = (await el.get_attribute("href") or "").strip()
                     if href and not href.startswith("http"):
@@ -373,9 +366,9 @@ async def scrape_live(page, context) -> list:
                         "url": href
                     })
                 except Exception:
-                    continue
+                    pass
         except Exception:
-            continue
+            pass
 
     all_live = []
     if live_matches_raw:
@@ -393,14 +386,9 @@ async def scrape_live(page, context) -> list:
     return all_live
 
 async def scrape_fixtures(page, league: dict) -> list:
-    name = league["name"]
     logo = league.get("league_logo", "")
-
     await page.goto(league["url"], wait_until="domcontentloaded", timeout=60000)
-    try:
-        await page.wait_for_selector("div.matches-week-title, a.ajax-match-item", timeout=15000)
-    except Exception:
-        pass
+    await page.wait_for_timeout(3000)
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
@@ -428,7 +416,7 @@ async def scrape_fixtures(page, league: dict) -> list:
                 continue
 
             raw_time = await el.evaluate("""(el) => {
-                let match = el.innerText.match(/\\d{1,2}:\\d{2}\\s*(?:am|pm|AM|PM|ص|م)?/i);
+                let match = el.innerText.match(/\\d{1,2}:\\d{2}\\s*(?:am|pm|AM|PM)?/i);
                 return match ? match[0] : "";
             }""")
             
@@ -452,19 +440,14 @@ async def scrape_fixtures(page, league: dict) -> list:
                 "url": href
             })
         except Exception:
-            continue
+            pass
 
     return fixtures
 
 async def scrape_results(page, league: dict) -> list:
-    name = league["name"]
     logo = league.get("league_logo", "")
-
     await page.goto(league["results_url"], wait_until="domcontentloaded", timeout=60000)
-    try:
-        await page.wait_for_selector("div.matches-week-title, a.ajax-match-item", timeout=15000)
-    except Exception:
-        pass
+    await page.wait_for_timeout(3000)
 
     server_tz = await page.evaluate("""() => {
         let el = document.querySelector('.settings-link-item.timezone .action span');
@@ -488,12 +471,18 @@ async def scrape_results(page, league: dict) -> list:
 
             h_s = await el.query_selector("span.first-team-result")
             a_s = await el.query_selector("span.second-team-result")
-            if not h_s or not a_s:
+            
+            if h_s and a_s:
+                score = f"{(await h_s.inner_text()).strip()} - {(await a_s.inner_text()).strip()}"
+            else:
+                res_wrap = await el.query_selector("div.result-wrap")
+                res_text = (await res_wrap.inner_text()).strip() if res_wrap else ""
+                score = parse_score(res_text)
+
+            if score == "-- - --":
                 continue
 
-            score = f"{(await h_s.inner_text()).strip()} - {(await a_s.inner_text()).strip()}"
             match_date = standardize_date(curr_date)
-            
             utc_iso, _ = parse_and_convert_time(match_date, "12:00 PM", server_tz)
 
             href = (await el.get_attribute("href") or "").strip()
@@ -514,7 +503,7 @@ async def scrape_results(page, league: dict) -> list:
                 "url": href
             })
         except Exception:
-            continue
+            pass
 
     return results
 
@@ -523,10 +512,7 @@ async def scrape_standings(page, league: dict) -> dict:
         return {}
 
     await page.goto(league["standings_url"], wait_until="domcontentloaded", timeout=60000)
-    try:
-        await page.wait_for_selector("div.collapse-item-wrap.groups-item, div.ranking-table", timeout=15000)
-    except Exception:
-        pass
+    await page.wait_for_timeout(3000)
 
     group_containers = await page.query_selector_all("div.collapse-item-wrap.groups-item")
     if group_containers and len(group_containers) >= 2:
@@ -543,11 +529,10 @@ async def scrape_standings(page, league: dict) -> dict:
                 if teams:
                     groups.append({"group": gn, "teams": teams})
             except Exception:
-                continue
+                pass
         return {"type": "grouped", "groups": groups} if groups else {}
     else:
-        rt_el = (await page.query_selector("div.ranking-table div.tab-pos-rank.rank_all")
-                 or await page.query_selector("div.ranking-table"))
+        rt_el = await page.query_selector("div.ranking-table div.tab-pos-rank.rank_all") or await page.query_selector("div.ranking-table")
         if rt_el:
             rows = await rt_el.query_selector_all("div.rank-row")
             table = await _parse_rank_rows(rows)
@@ -565,8 +550,7 @@ async def _parse_rank_rows(rows) -> list:
             pos = (await pos_el.inner_text()).strip()
             if not pos.isdigit():
                 continue
-            nd = (await row.query_selector("div.rank-col.name div.team-name")
-                  or await row.query_selector("div.rank-col.name"))
+            nd = await row.query_selector("div.rank-col.name div.team-name") or await row.query_selector("div.rank-col.name")
             info_el = await nd.query_selector("div.info")
             team = (await info_el.inner_text()).strip() if info_el else (await nd.inner_text()).strip()
             img_el = await nd.query_selector("img")
@@ -587,13 +571,12 @@ async def _parse_rank_rows(rows) -> list:
                 "points":  (await (await _get("div.rank-col.points")).inner_text()).strip()
             })
         except Exception:
-            continue
+            pass
     return table
 
 async def scrape_league(context, league: dict) -> None:
     page = await context.new_page()
     try:
-        print(f"▶ Scraping {league['name']}...")
         fixtures  = await scrape_fixtures(page, league)
         results   = await scrape_results(page, league)
         standings = await scrape_standings(page, league)
@@ -605,8 +588,8 @@ async def scrape_league(context, league: dict) -> None:
             "results":     results,
             "standings":   standings,
         })
-    except Exception as e:
-        print(f"❌ Error in {league['name']}: {e}")
+    except Exception:
+        pass
     finally:
         await page.close()
 
@@ -618,8 +601,7 @@ async def main() -> None:
         )
         
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-            locale="ar-TN"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
         )
 
         live_page = await context.new_page()
@@ -629,6 +611,13 @@ async def main() -> None:
         await asyncio.gather(*[scrape_league(context, league) for league in LEAGUES])
 
         await browser.close()
+
+    print("\n" + "=" * 50)
+    print("📊 FINAL SCRAPE SUMMARY:")
+    print("=" * 50)
+    for doc, info in DEBUG_STATS.items():
+        print(f"  {doc.ljust(25)} : {info}")
+    print("=" * 50)
 
 if __name__ == "__main__":
     asyncio.run(main())
