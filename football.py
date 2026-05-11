@@ -41,7 +41,7 @@ async def scrape_all_live(context):
         await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
         
         try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=20000)
+            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
         except:
             print("ℹ️ No live matches at this exact moment.")
             pass
@@ -117,13 +117,13 @@ async def scrape_league(context, league):
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
         try:
-            logo_el = await page.wait_for_selector("div.qg img", timeout=10000)
+            logo_el = await page.wait_for_selector("div.qg img", timeout=5000)
             league_logo = await logo_el.get_attribute("src") if logo_el else ""
         except:
             pass
 
         try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=30000)
+            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
             data = await page.evaluate('''() => {
                 const fix = [];
                 const res = [];
@@ -141,40 +141,8 @@ async def scrape_league(context, league):
                     const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
                     const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
                     
-                    let matchDate = "";
-                    let currentElement = row;
-                    const ignoreList = ['fixtures', 'results', 'matches', 'table', 'overview', 'news', 'all', 'home', 'away'];
-
-                    while(currentElement && currentElement !== document.body) {
-                        let pSibling = currentElement.previousElementSibling;
-                        while(pSibling) {
-                            let text = pSibling.innerText.trim().split('\\n')[0];
-                            const lowerText = text.toLowerCase();
-                            
-                            if (text && text.length >= 3 && text.length <= 30 && !text.includes(':') && !ignoreList.includes(lowerText)) {
-                                if (lowerText === 'today') {
-                                    matchDate = todayStr;
-                                } else if (lowerText === 'yesterday') {
-                                    let d = new Date(); 
-                                    d.setDate(d.getDate() - 1);
-                                    matchDate = d.toISOString().split('T')[0];
-                                } else if (lowerText === 'tomorrow') {
-                                    let d = new Date(); 
-                                    d.setDate(d.getDate() + 1);
-                                    matchDate = d.toISOString().split('T')[0];
-                                } else {
-                                    matchDate = text;
-                                }
-                                break;
-                            }
-                            pSibling = pSibling.previousElementSibling;
-                        }
-                        if (matchDate) break;
-                        currentElement = currentElement.parentElement;
-                    }
-                    
                     const matchObj = {
-                        date: matchDate || todayStr,
+                        date: todayStr,
                         home: homeName,
                         away: awayName,
                         home_logo: homeLogo,
@@ -201,7 +169,7 @@ async def scrape_league(context, league):
 
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
-            await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=30000)
+            await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=10000)
             standings = await page.evaluate('''() => {
                 const table = [];
                 const seenTeams = new Set();
@@ -209,20 +177,19 @@ async def scrape_league(context, league):
                 const nameRows = Array.from(document.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
                 
                 for (const row of nameRows) {
-                    const teamName = row.querySelector('div[data-id="c-nm"]')?.innerText.trim() || "";
-                    if (!teamName) continue;
-                    
-                    // Filter out duplicates from Home/Away tabs rendering on the same page
-                    if (seenTeams.has(teamName)) continue;
-                    seenTeams.add(teamName);
-
                     const rowId = row.getAttribute('data-id'); 
                     
                     let posText = row.querySelector('div[data-id="c-pos"]')?.innerText.trim() || "";
                     const match = posText.match(/\\d+/);
                     const pos = match ? match[0] : posText;
                     
+                    const teamName = row.querySelector('div[data-id="c-nm"]')?.innerText.trim() || "";
                     const teamLogo = row.querySelector('img')?.src || "";
+                    
+                    if (!teamName) continue;
+                    
+                    if (seenTeams.has(teamName)) continue;
+                    seenTeams.add(teamName);
                     
                     const statsRows = Array.from(document.querySelectorAll(`div.nj[data-id="${rowId}"]`));
                     const statsRow = statsRows.find(r => r.querySelector('div[data-id$="_played"]'));
@@ -239,12 +206,14 @@ async def scrape_league(context, league):
                         pts = statsRow.querySelector('div[data-id$="_points"]')?.innerText.trim() || "0";
                     }
                     
-                    table.push({
-                        position: pos,
-                        team: teamName,
-                        team_logo: teamLogo,
-                        played, wins, draws, losses, goals_for: gf, goals_against: ga, goal_diff: gd, points: pts
-                    });
+                    if (!table.some(t => t.team === teamName)) {
+                        table.push({
+                            position: pos,
+                            team: teamName,
+                            team_logo: teamLogo,
+                            played, wins, draws, losses, goals_for: gf, goals_against: ga, goal_diff: gd, points: pts
+                        });
+                    }
                 }
                 return table;
             }''')
