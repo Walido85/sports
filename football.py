@@ -172,7 +172,7 @@ def standardize_date(date_str: str) -> str:
     return date_str
 
 def parse_and_convert_time(date_str: str, time_str: str) -> tuple[str, str]:
-    """Forcefully assumes the scraped time is already in Tunis Time (since we forced LocalStorage & Cookies)"""
+    """Forcefully assumes the scraped time is already in Tunis Time (since we forced LocalStorage & browser TZ)"""
     parsed_24h = parse_time_24h(time_str)
 
     if not date_str or not parsed_24h or parsed_24h == "FT" or "--" in parsed_24h:
@@ -183,7 +183,7 @@ def parse_and_convert_time(date_str: str, time_str: str) -> tuple[str, str]:
         if not re.match(r'^\d{2}:\d{2}$', parsed_24h):
             return "", time_str
 
-        # Attach Tunis Time explicitly because the browser injected it
+        # Attach Tunis Time explicitly because the Playwright browser injected it accurately
         dt_naive = datetime.strptime(f"{date_part} {parsed_24h}", "%Y-%m-%d %H:%M")
         dt_tunis = dt_naive.replace(tzinfo=TUNIS_TZ)
         dt_utc = dt_tunis.astimezone(UTC_TZ)
@@ -211,7 +211,6 @@ def save_league(name: str, data: dict) -> None:
     standings_count = len(standings.get("table", standings.get("groups", [])))
     
     DEBUG_STATS[name] = f"fixtures={fixtures_count} results={results_count} standings={standings_count}"
-    print(f"✅ Saved '{name}'")
 
 def save_live(matches: list) -> None:
     db.collection("football").document("live").set({
@@ -220,7 +219,6 @@ def save_live(matches: list) -> None:
         "updated_at": datetime.utcnow().isoformat()
     })
     DEBUG_STATS["LIVE"] = f"matches={len(matches)}"
-    print(f"✅ Saved 'LIVE' ({len(matches)} matches)")
 
 # ---------------------------------------------------------------------------
 # MATCH EVENTS 
@@ -295,9 +293,7 @@ async def scrape_match_events(context, match_url: str) -> list:
 # LIVE SCRAPER
 # ---------------------------------------------------------------------------
 async def scrape_live(page, context) -> list:
-    print("▶ Scraping LIVE matches...")
-    # Explicitly scrape the Arabic 'today matches' endpoint with a long wait to ensure AJAX load
-    await page.goto("https://www.ysscores.com/ar/today_matches", wait_until="domcontentloaded", timeout=60000)
+    await page.goto("https://www.ysscores.com/ar/", wait_until="networkidle", timeout=60000)
     await page.wait_for_timeout(5000)
     
     try:
@@ -597,7 +593,6 @@ async def _parse_rank_rows(rows) -> list:
 async def scrape_league(context, league: dict) -> None:
     page = await context.new_page()
     try:
-        print(f"▶ Scraping {league['name']}...")
         fixtures  = await scrape_fixtures(page, league)
         results   = await scrape_results(page, league)
         standings = await scrape_standings(page, league)
@@ -631,7 +626,7 @@ async def main() -> None:
             locale="ar-TN"
         )
 
-        # Force ysscores to output in Tunis time to bypass IP geoloction overrides
+        # Force ysscores to output in Tunis time using local storage cookies to bypass IP geolocation overrides
         await context.add_init_script("window.localStorage.setItem('timezone', 'Africa/Tunis');")
         await context.add_cookies([
             {"name": "timezone", "value": "Africa/Tunis", "domain": ".ysscores.com", "path": "/"}
