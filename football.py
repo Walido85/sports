@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -49,7 +50,6 @@ async def scrape_all_live(context):
         live_matches = await page.evaluate('''() => {
             const matches = [];
             const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
-            const todayStr = new Date().toISOString().split('T')[0];
             
             for (const row of rows) {
                 const statusText = row.querySelector('span[data-id*="st-tm"]')?.innerText.trim() || "";
@@ -72,7 +72,6 @@ async def scrape_all_live(context):
                 const leagueLogo = container ? (container.querySelector('div.qg img')?.src || "") : "";
 
                 matches.push({
-                    date: todayStr,
                     home: homeName,
                     away: awayName,
                     home_logo: homeLogo,
@@ -128,7 +127,6 @@ async def scrape_league(context, league):
                 const fix = [];
                 const res = [];
                 const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
-                const todayStr = new Date().toISOString().split('T')[0];
                 
                 for (const row of rows) {
                     const statusText = row.querySelector('span[data-id*="st-tm"]')?.innerText.trim() || "";
@@ -142,7 +140,6 @@ async def scrape_league(context, league):
                     const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
                     
                     const matchObj = {
-                        date: todayStr,
                         home: homeName,
                         away: awayName,
                         home_logo: homeLogo,
@@ -172,8 +169,6 @@ async def scrape_league(context, league):
             await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=10000)
             standings = await page.evaluate('''() => {
                 const table = [];
-                const seenTeams = new Set();
-                
                 const nameRows = Array.from(document.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
                 
                 for (const row of nameRows) {
@@ -187,9 +182,6 @@ async def scrape_league(context, league):
                     const teamLogo = row.querySelector('img')?.src || "";
                     
                     if (!teamName) continue;
-                    
-                    if (seenTeams.has(teamName)) continue;
-                    seenTeams.add(teamName);
                     
                     const statsRows = Array.from(document.querySelectorAll(`div.nj[data-id="${rowId}"]`));
                     const statsRow = statsRows.find(r => r.querySelector('div[data-id$="_played"]'));
@@ -242,6 +234,7 @@ async def main():
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         
+        # Enforce UTC timezone so all scraped times are strictly UTC
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             timezone_id="UTC",
