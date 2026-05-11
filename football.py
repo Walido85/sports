@@ -29,7 +29,7 @@ LEAGUES = [
     {"name": "Bundesliga", "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
     {"name": "Ligue 1", "url": "https://www.livescore.com/en/football/france/ligue-1/"},
     {"name": "UEFA Champions League", "url": "https://www.livescore.com/en/football/champions-league/"},
-    {"name": "CAF Champions League", "url": "https://www.livescore.com/en/football/caf-champions-league/"}
+    {"name": "CAF Champions League", "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
 ]
 
 LIVE_JS = """() => {
@@ -64,17 +64,8 @@ LIVE_JS = """() => {
 MATCHES_JS = """() => {
     const fix = [];
     const res = [];
-    const allElements = document.querySelectorAll('div[data-id]');
-    let currentDate = "";
-    for (const el of allElements) {
-        const did = el.getAttribute('data-id') || "";
-        if (did.includes("st-dt") || did.includes("dt-hdr")) {
-            const txt = el.innerText.trim();
-            if (txt) currentDate = txt;
-            continue;
-        }
-        if (!did.includes("_mtc-r")) continue;
-        const row = el;
+    const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
+    for (const row of rows) {
         const statusText = row.querySelector('span[data-id*="st-tm"]')?.innerText.trim() || "";
         const homeName = row.querySelector('div[data-id*="hm-tm-nm"]')?.innerText.trim() || "";
         const awayName = row.querySelector('div[data-id*="aw-tm-nm"]')?.innerText.trim() || "";
@@ -84,10 +75,11 @@ MATCHES_JS = """() => {
         const awayLogo = imgs[1]?.src || "";
         const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
         const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
+        const matchDate = row.querySelector('span.jx')?.innerText.trim() || "";
         const matchObj = {
             home: homeName, away: awayName,
             home_logo: homeLogo, away_logo: awayLogo,
-            date: currentDate, timezone: "UTC"
+            date: matchDate, timezone: "UTC"
         };
         if (statusText.includes("FT") || statusText.includes("AET") || statusText.includes("Canc") || statusText.includes("Postp")) {
             matchObj.status = "result";
@@ -104,7 +96,7 @@ MATCHES_JS = """() => {
 
 STANDINGS_JS = """() => {
     const table = [];
-    const rows = document.querySelectorAll('div.Wj[data-id^="rw-"]');
+    const rows = document.querySelectorAll('div[data-id^="rw-"]');
     for (const row of rows) {
         const rowId = row.getAttribute('data-id');
         const teamId = rowId.replace('rw-', '');
@@ -202,7 +194,7 @@ async def scrape_league(context, league):
                 pass
 
         try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
+            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=15000)
             data = await page.evaluate(MATCHES_JS)
             fixtures = data.get("fixtures", [])
             results = data.get("results", [])
@@ -211,7 +203,7 @@ async def scrape_league(context, league):
 
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
-            await page.wait_for_selector('div.Wj[data-id^="rw-"]', timeout=10000)
+            await page.wait_for_selector('div[data-id^="rw-"]', timeout=15000)
             standings = await page.evaluate(STANDINGS_JS)
         except Exception:
             print(f"⚠️ No standings found for {name}")
