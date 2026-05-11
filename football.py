@@ -22,14 +22,14 @@ db = firestore.Client(project="tunisia-radios-d7aa8", credentials=credentials, d
 print("✅ Firestore connected")
 
 LEAGUES = [
-    {"name": "Tunisia Ligue 1",       "url": "https://www.livescore.com/en/football/tunisia/ligue-i/"},
-    {"name": "Premier League",         "url": "https://www.livescore.com/en/football/england/premier-league/"},
-    {"name": "LaLiga",                 "url": "https://www.livescore.com/en/football/spain/laliga/"},
-    {"name": "Serie A",                "url": "https://www.livescore.com/en/football/italy/serie-a/"},
-    {"name": "Bundesliga",             "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
-    {"name": "Ligue 1",                "url": "https://www.livescore.com/en/football/france/ligue-1/"},
-    {"name": "UEFA Champions League",  "url": "https://www.livescore.com/en/football/europe/champions-league/"},
-    {"name": "CAF Champions League",   "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
+    {"name": "Tunisia Ligue 1",      "url": "https://www.livescore.com/en/football/tunisia/ligue-i/"},
+    {"name": "Premier League",        "url": "https://www.livescore.com/en/football/england/premier-league/"},
+    {"name": "LaLiga",                "url": "https://www.livescore.com/en/football/spain/laliga/"},
+    {"name": "Serie A",               "url": "https://www.livescore.com/en/football/italy/serie-a/"},
+    {"name": "Bundesliga",            "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
+    {"name": "Ligue 1",               "url": "https://www.livescore.com/en/football/france/ligue-1/"},
+    {"name": "UEFA Champions League", "url": "https://www.livescore.com/en/football/europe/champions-league/"},
+    {"name": "CAF Champions League",  "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
 ]
 
 LIVE_JS = """() => {
@@ -95,84 +95,67 @@ MATCHES_JS = """() => {
 }"""
 
 STANDINGS_JS = """() => {
-    const groups = [];
-    let currentGroup = null;
-
-    const allNodes = document.querySelectorAll('div[data-id]');
-    for (const node of allNodes) {
-        const did = node.getAttribute('data-id') || "";
-
-        // Detect group/section header
-        if (did.includes("st-hdr") || did.includes("stg-hdr") || did.includes("grp-hdr") || did.includes("lt-tb-")) {
-            const headerText = node.innerText?.trim();
-            if (headerText && headerText.length < 50 && !headerText.includes("P") && !headerText.includes("Pts")) {
-                // Likely a group name like "Group A"
-                currentGroup = { name: headerText, table: [] };
-                groups.push(currentGroup);
-            }
-            continue;
-        }
-
-        if (!did.startsWith('rw-')) continue;
-
-        const teamId = did.replace('rw-', '');
-        if (!node.querySelector('div[data-id="c-nm"]')) continue;
-
-        const posEl = node.querySelector('div[data-id="c-pos"]');
-        let posText = posEl?.innerText?.trim() || "";
-        const posMatch = posText.match(/\\d+/);
-        const pos = posMatch ? posMatch[0] : posText;
-
-        const teamLink = node.querySelector('div[data-id="c-nm"] a.ux');
-        if (!teamLink) continue;
-        const teamName = teamLink.innerText?.trim() || "";
-        const teamLogo = teamLink.querySelector('div.vx img')?.src || "";
-        if (!teamName) continue;
-
-        let played="0", wins="0", draws="0", losses="0", gf="0", ga="0", gd="0", pts="0";
-        const allTeamDivs = document.querySelectorAll('div[data-id^="' + teamId + '_"]');
-        let foundSuffix = "";
-        for (const d of allTeamDivs) {
-            const tdid = d.getAttribute('data-id');
-            if (tdid.endsWith('_played')) {
-                foundSuffix = tdid.replace(teamId + '_', '').replace('_played', '');
+    function getStats(teamId) {
+        const allDivs = document.querySelectorAll('div[data-id^="' + teamId + '_"]');
+        let suffix = "";
+        for (const d of allDivs) {
+            const did = d.getAttribute('data-id');
+            if (did.endsWith('_played')) {
+                suffix = did.replace(teamId + '_', '').replace('_played', '');
                 break;
             }
         }
-        if (foundSuffix) {
-            played = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_played"]')?.innerText?.trim() || "0";
-            wins   = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_wins"]')?.innerText?.trim() || "0";
-            draws  = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_draws"]')?.innerText?.trim() || "0";
-            losses = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_losses"]')?.innerText?.trim() || "0";
-            gf     = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_goalsFor"]')?.innerText?.trim() || "0";
-            ga     = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_goalsAgainst"]')?.innerText?.trim() || "0";
-            gd     = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_goalsDiff"]')?.innerText?.trim() || "0";
-            pts    = document.querySelector('div[data-id="' + teamId + '_' + foundSuffix + '_points"]')?.innerText?.trim() || "0";
-        }
-
-        const entry = {
-            position: pos, team: teamName, team_logo: teamLogo,
-            played, wins, draws, losses,
-            goals_for: gf, goals_against: ga, goal_diff: gd, points: pts
-        };
-
-        if (!currentGroup) {
-            currentGroup = { name: "Table", table: [] };
-            groups.push(currentGroup);
-        }
-        if (!currentGroup.table.some(t => t.team === teamName)) {
-            currentGroup.table.push(entry);
-        }
+        if (!suffix) return { played:"0", wins:"0", draws:"0", losses:"0", goals_for:"0", goals_against:"0", goal_diff:"0", points:"0" };
+        const g = (stat) => document.querySelector('div[data-id="' + teamId + '_' + suffix + '_' + stat + '"]')?.innerText?.trim() || "0";
+        return { played: g('played'), wins: g('wins'), draws: g('draws'), losses: g('losses'), goals_for: g('goalsFor'), goals_against: g('goalsAgainst'), goal_diff: g('goalsDiff'), points: g('points') };
     }
 
-    // If only one group named "Table", return as single
-    if (groups.length === 1 && groups[0].name === "Table") {
-        return { type: "single", table: groups[0].table };
+    function parseRow(row) {
+        const rowId = row.getAttribute('data-id');
+        const teamId = rowId.replace('rw-', '');
+        if (!row.querySelector('div[data-id="c-nm"]')) return null;
+        const posEl = row.querySelector('div[data-id="c-pos"]');
+        const posMatch = (posEl?.innerText?.trim() || "").match(/\\d+/);
+        const pos = posMatch ? posMatch[0] : "";
+        const teamLink = row.querySelector('div[data-id="c-nm"] a.ux');
+        if (!teamLink) return null;
+        const teamName = teamLink.innerText?.trim() || "";
+        const teamLogo = teamLink.querySelector('div.vx img')?.src || "";
+        if (!teamName) return null;
+        return { position: pos, team: teamName, team_logo: teamLogo, ...getStats(teamId) };
     }
-    if (groups.length > 1) {
-        return { type: "groups", groups: groups };
+
+    // Check for group-stage structure by looking for multiple sub-table containers
+    const subTables = document.querySelectorAll('div[data-id^="lt-tb-all-"]');
+    if (subTables.length > 1) {
+        const groups = [];
+        for (const sub of subTables) {
+            const subId = sub.getAttribute('data-id');
+            // Get group name from tab/header associated with this sub-table
+            const tabId = subId.replace('lt-tb-all-', '');
+            const tabEl = document.querySelector('div[data-id="lt-tb-all-' + tabId + '-hdr"]') ||
+                          document.querySelector('a[id="' + tabId + '__tab"]') ||
+                          document.querySelector('div[id="tb-it_' + tabId + '"] a');
+            const groupName = tabEl?.innerText?.trim() || subId;
+            const rows = sub.querySelectorAll('div[data-id^="rw-"]');
+            const table = [];
+            for (const row of rows) {
+                const entry = parseRow(row);
+                if (entry && !table.some(t => t.team === entry.team)) table.push(entry);
+            }
+            if (table.length > 0) groups.push({ name: groupName, table });
+        }
+        if (groups.length > 0) return { type: "groups", groups };
     }
-    return { type: "single", table: [] };
+
+    // Standard single table
+    const rows = document.querySelectorAll('div[data-id^="rw-"]');
+    const table = [];
+    for (const row of rows) {
+        const entry = parseRow(row);
+        if (entry && !table.some(t => t.team === entry.team)) table.push(entry);
+    }
+    return { type: "single", table };
 }"""
 
 
@@ -187,7 +170,7 @@ async def scrape_all_live(context):
             pass
         live_matches = await page.evaluate(LIVE_JS)
     except Exception as e:
-        print(f"❌ Live scrape error: {e}")
+        print(f"❌ Live: {e}")
     finally:
         await page.close()
 
@@ -247,8 +230,11 @@ async def scrape_league(context, league):
             "updated_at": datetime.now(timezone.utc).isoformat()
         })
 
-        teams = standings.get("table", standings.get("groups", []))
-        team_count = len(teams) if isinstance(teams, list) and standings.get("type") == "single" else sum(len(g.get("table", [])) for g in teams) if isinstance(teams, list) else 0
+        s = standings
+        if s.get("type") == "single":
+            team_count = len(s.get("table", []))
+        else:
+            team_count = sum(len(g.get("table", [])) for g in s.get("groups", []))
         print(f"✅ {name}: {len(fixtures)} Fix | {len(results)} Res | {team_count} Teams")
 
     except Exception as e:
