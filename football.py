@@ -3,8 +3,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
@@ -143,7 +142,6 @@ async def scrape_league(context, league):
                     const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
                     const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
                     
-                    // Date Fix
                     let matchDate = "";
                     let currentElement = row;
                     const ignoreList = ['fixtures', 'results', 'matches', 'table', 'overview', 'news', 'all', 'home', 'away'];
@@ -202,7 +200,6 @@ async def scrape_league(context, league):
         except Exception:
             print(f"⚠️ No matches found for {name}")
 
-        # Standings Fix: Reverted to full selector, added duplicate filter
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
             await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=10000)
@@ -210,13 +207,13 @@ async def scrape_league(context, league):
                 const table = [];
                 const seenTeams = new Set();
                 
-                const nameRows = Array.from(document.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
+                const allTabContainer = document.querySelector('div[data-id="lt-tb-all"]') || document;
+                const nameRows = Array.from(allTabContainer.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
                 
                 for (const row of nameRows) {
                     const teamName = row.querySelector('div[data-id="c-nm"]')?.innerText.trim() || "";
                     if (!teamName) continue;
                     
-                    // Prevent duplicates (Home/Away tabs)
                     if (seenTeams.has(teamName)) continue;
                     seenTeams.add(teamName);
 
@@ -228,7 +225,7 @@ async def scrape_league(context, league):
                     
                     const teamLogo = row.querySelector('img')?.src || "";
                     
-                    const statsRows = Array.from(document.querySelectorAll(`div.nj[data-id="${rowId}"]`));
+                    const statsRows = Array.from(allTabContainer.querySelectorAll(`div.nj[data-id="${rowId}"]`));
                     const statsRow = statsRows.find(r => r.querySelector('div[data-id$="_played"]'));
                     
                     let played="0", wins="0", draws="0", losses="0", gf="0", ga="0", gd="0", pts="0";
