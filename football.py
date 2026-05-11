@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import re
 import sys
 from datetime import datetime, timezone
 
@@ -42,7 +41,7 @@ async def scrape_all_live(context):
         await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
         
         try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
+            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=20000)
         except:
             print("ℹ️ No live matches at this exact moment.")
             pass
@@ -118,13 +117,13 @@ async def scrape_league(context, league):
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
         try:
-            logo_el = await page.wait_for_selector("div.qg img", timeout=5000)
+            logo_el = await page.wait_for_selector("div.qg img", timeout=10000)
             league_logo = await logo_el.get_attribute("src") if logo_el else ""
         except:
             pass
 
         try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
+            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=30000)
             data = await page.evaluate('''() => {
                 const fix = [];
                 const res = [];
@@ -202,7 +201,7 @@ async def scrape_league(context, league):
 
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
-            await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=10000)
+            await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=30000)
             standings = await page.evaluate('''() => {
                 const table = [];
                 const seenTeams = new Set();
@@ -213,6 +212,7 @@ async def scrape_league(context, league):
                     const teamName = row.querySelector('div[data-id="c-nm"]')?.innerText.trim() || "";
                     if (!teamName) continue;
                     
+                    // Filter out duplicates from Home/Away tabs rendering on the same page
                     if (seenTeams.has(teamName)) continue;
                     seenTeams.add(teamName);
 
