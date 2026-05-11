@@ -207,8 +207,7 @@ async def scrape_league(context, league):
                 const table = [];
                 const seenTeams = new Set();
                 
-                const allTabContainer = document.querySelector('div[data-id="lt-tb-all"]') || document;
-                const nameRows = Array.from(allTabContainer.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
+                const nameRows = Array.from(document.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
                 
                 for (const row of nameRows) {
                     const teamName = row.querySelector('div[data-id="c-nm"]')?.innerText.trim() || "";
@@ -225,7 +224,7 @@ async def scrape_league(context, league):
                     
                     const teamLogo = row.querySelector('img')?.src || "";
                     
-                    const statsRows = Array.from(allTabContainer.querySelectorAll(`div.nj[data-id="${rowId}"]`));
+                    const statsRows = Array.from(document.querySelectorAll(`div.nj[data-id="${rowId}"]`));
                     const statsRow = statsRows.find(r => r.querySelector('div[data-id$="_played"]'));
                     
                     let played="0", wins="0", draws="0", losses="0", gf="0", ga="0", gd="0", pts="0";
