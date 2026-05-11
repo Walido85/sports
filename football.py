@@ -3,16 +3,12 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from google.cloud import firestore
 from google.oauth2 import service_account
-
-# Strict Tunis Timezone
-TUNIS_TZ = ZoneInfo("Africa/Tunis")
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -38,7 +34,6 @@ LEAGUES = [
 ]
 
 async def scrape_all_live(context):
-    """Scrapes the global Live page and saves all active matches to a separate document."""
     page = await context.new_page()
     print("▶ Scraping Global LIVE matches...")
     
@@ -85,7 +80,8 @@ async def scrape_all_live(context):
                     league_logo: leagueLogo,
                     status: "live",
                     score: (hScore && aScore) ? `${hScore} - ${aScore}` : "-- - --",
-                    minute: statusText
+                    minute: statusText,
+                    timezone: "UTC"
                 });
             }
             return matches;
@@ -99,16 +95,14 @@ async def scrape_all_live(context):
     db.collection("football").document("live").set({
         "matches": live_matches,
         "count": len(live_matches),
-        "updated_at": datetime.now(TUNIS_TZ).isoformat()
+        "updated_at": datetime.now(timezone.utc).isoformat()
     })
     print(f"✅ Saved 'live': {len(live_matches)} matches")
 
 async def scrape_league(context, league):
-    """Scrapes Fixtures, Results, and Standings for a specific league."""
     page = await context.new_page()
     name = league["name"]
     url = league["url"]
-    # LiveScore uses /standings/ for the league page table
     standings_url = url + "standings/" if not url.endswith("standings/") else url
     
     print(f"▶ Processing {name}...")
@@ -118,7 +112,6 @@ async def scrape_league(context, league):
     standings = []
     league_logo = ""
 
-    # 1. Scrape Matches
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         
@@ -150,7 +143,8 @@ async def scrape_league(context, league):
                         home: homeName,
                         away: awayName,
                         home_logo: homeLogo,
-                        away_logo: awayLogo
+                        away_logo: awayLogo,
+                        timezone: "UTC"
                     };
 
                     if (statusText.includes("FT") || statusText.includes("AET") || statusText.includes("Canc") || statusText.includes("Postp")) {
@@ -170,17 +164,15 @@ async def scrape_league(context, league):
         except Exception:
             print(f"⚠️ No matches found for {name}")
 
-        # 2. Scrape Standings Table
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
             await page.wait_for_selector('div.nj[data-id^="rw-"]', timeout=10000)
             standings = await page.evaluate('''() => {
                 const table = [];
-                // Find rows that have a team name (c-nm)
                 const nameRows = Array.from(document.querySelectorAll('div.nj[data-id^="rw-"]')).filter(r => r.querySelector('div[data-id="c-nm"]'));
                 
                 for (const row of nameRows) {
-                    const rowId = row.getAttribute('data-id'); // e.g. rw-4556
+                    const rowId = row.getAttribute('data-id'); 
                     
                     let posText = row.querySelector('div[data-id="c-pos"]')?.innerText.trim() || "";
                     const match = posText.match(/\\d+/);
@@ -191,7 +183,6 @@ async def scrape_league(context, league):
                     
                     if (!teamName) continue;
                     
-                    // Find the sibling row with the same ID that holds the stats
                     const statsRows = Array.from(document.querySelectorAll(`div.nj[data-id="${rowId}"]`));
                     const statsRow = statsRows.find(r => r.querySelector('div[data-id$="_played"]'));
                     
@@ -207,7 +198,6 @@ async def scrape_league(context, league):
                         pts = statsRow.querySelector('div[data-id$="_points"]')?.innerText.trim() || "0";
                     }
                     
-                    // Only add if team isn't already in the list (prevents duplicates from home/away tabs)
                     if (!table.some(t => t.team === teamName)) {
                         table.push({
                             position: pos,
@@ -228,7 +218,7 @@ async def scrape_league(context, league):
             "fixtures": fixtures,
             "results": results,
             "standings": {"type": "single", "table": standings} if standings else {},
-            "updated_at": datetime.now(TUNIS_TZ).isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         })
         print(f"✅ Saved {name}: {len(fixtures)} Fix | {len(results)} Res | {len(standings)} Teams in Table")
 
@@ -244,16 +234,15 @@ async def main():
             args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
         
+        # Enforce UTC timezone so all scraped times are strictly UTC
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            timezone_id="Africa/Tunis",
+            timezone_id="UTC",
             locale="en-GB"
         )
         
-        # Scrape Global Live Matches first
         await scrape_all_live(context)
 
-        # Scrape Individual Leagues sequentially
         for league in LEAGUES:
             await scrape_league(context, league)
             
