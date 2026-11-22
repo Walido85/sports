@@ -1,17 +1,16 @@
 name: Football Scraper
 
 on:
-  branch_protection_rule:
-
-
   schedule:
-    - cron: "7,22,37,52 * * * *"
-
-    
+    - cron: "3,13,23,33,43,53 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: "football-scraper-run"
+  cancel-in-progress: false
 
 jobs:
   scrape:
