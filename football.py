@@ -6,30 +6,18 @@ from datetime import datetime, timezone
 
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
-from google.cloud import firestore
-from google.oauth2 import service_account
 
 sys.stdout.reconfigure(line_buffering=True)
 
-firebase_secret = os.environ.get("FIREBASE_CREDENTIALS")
-if not firebase_secret:
-    print("❌ No FIREBASE_CREDENTIALS found.")
-    sys.exit(1)
-
-cred_dict = json.loads(firebase_secret)
-credentials = service_account.Credentials.from_service_account_info(cred_dict)
-db = firestore.Client(project="tunisia-radios-d7aa8", credentials=credentials, database="(default)")
-print("✅ Firestore connected")
-
 LEAGUES = [
-    {"name": "Tunisia Ligue 1",      "url": "https://www.livescore.com/en/football/tunisia/ligue-i/"},
-    {"name": "Premier League",        "url": "https://www.livescore.com/en/football/england/premier-league/"},
-    {"name": "LaLiga",                "url": "https://www.livescore.com/en/football/spain/laliga/"},
-    {"name": "Serie A",               "url": "https://www.livescore.com/en/football/italy/serie-a/"},
-    {"name": "Bundesliga",            "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
-    {"name": "Ligue 1",               "url": "https://www.livescore.com/en/football/france/ligue-1/"},
-    {"name": "UEFA Champions League", "url": "https://www.livescore.com/en/football/europe/champions-league/"},
-    {"name": "CAF Champions League",  "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
+    {"slug": "tunisia-ligue-1",       "name": "Tunisia Ligue 1",      "url": "https://www.livescore.com/en/football/tunisia/ligue-i/"},
+    {"slug": "premier-league",        "name": "Premier League",        "url": "https://www.livescore.com/en/football/england/premier-league/"},
+    {"slug": "laliga",                "name": "LaLiga",                "url": "https://www.livescore.com/en/football/spain/laliga/"},
+    {"slug": "serie-a",               "name": "Serie A",               "url": "https://www.livescore.com/en/football/italy/serie-a/"},
+    {"slug": "bundesliga",            "name": "Bundesliga",            "url": "https://www.livescore.com/en/football/germany/bundesliga/"},
+    {"slug": "ligue-1",               "name": "Ligue 1",               "url": "https://www.livescore.com/en/football/france/ligue-1/"},
+    {"slug": "uefa-champions-league", "name": "UEFA Champions League", "url": "https://www.livescore.com/en/football/europe/champions-league/"},
+    {"slug": "caf-champions-league",  "name": "CAF Champions League",  "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"}
 ]
 
 LIVE_JS = """() => {
@@ -125,13 +113,11 @@ STANDINGS_JS = """() => {
         return { position: pos, team: teamName, team_logo: teamLogo, ...getStats(teamId) };
     }
 
-    // Check for group-stage structure by looking for multiple sub-table containers
     const subTables = document.querySelectorAll('div[data-id^="lt-tb-all-"]');
     if (subTables.length > 1) {
         const groups = [];
         for (const sub of subTables) {
             const subId = sub.getAttribute('data-id');
-            // Get group name from tab/header associated with this sub-table
             const tabId = subId.replace('lt-tb-all-', '');
             const tabEl = document.querySelector('div[data-id="lt-tb-all-' + tabId + '-hdr"]') ||
                           document.querySelector('a[id="' + tabId + '__tab"]') ||
@@ -148,7 +134,6 @@ STANDINGS_JS = """() => {
         if (groups.length > 0) return { type: "groups", groups };
     }
 
-    // Standard single table
     const rows = document.querySelectorAll('div[data-id^="rw-"]');
     const table = [];
     for (const row of rows) {
@@ -166,7 +151,7 @@ async def scrape_all_live(context):
         await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
         try:
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
-        except:
+        except Exception:
             pass
         live_matches = await page.evaluate(LIVE_JS)
     except Exception as e:
@@ -174,12 +159,12 @@ async def scrape_all_live(context):
     finally:
         await page.close()
 
-    db.collection("football").document("live").set({
+    print(f"✅ live: {len(live_matches)} matches")
+    return {
         "matches": live_matches,
         "count": len(live_matches),
         "updated_at": datetime.now(timezone.utc).isoformat()
-    })
-    print(f"✅ live: {len(live_matches)} matches")
+    }
 
 
 async def scrape_league(context, league):
@@ -199,11 +184,11 @@ async def scrape_league(context, league):
         try:
             logo_el = await page.wait_for_selector("div.al img.Ok", timeout=5000)
             league_logo = await logo_el.get_attribute("src") if logo_el else ""
-        except:
+        except Exception:
             try:
                 logo_el = await page.query_selector("img.Ok")
                 league_logo = await logo_el.get_attribute("src") if logo_el else ""
-            except:
+            except Exception:
                 pass
 
         try:
@@ -221,20 +206,8 @@ async def scrape_league(context, league):
         except Exception:
             pass
 
-        db.collection("football").document(name).set({
-            "league": name,
-            "league_logo": league_logo,
-            "fixtures": fixtures,
-            "results": results,
-            "standings": standings,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        })
-
         s = standings
-        if s.get("type") == "single":
-            team_count = len(s.get("table", []))
-        else:
-            team_count = sum(len(g.get("table", [])) for g in s.get("groups", []))
+        team_count = len(s.get("table", [])) if s.get("type") == "single" else sum(len(g.get("table", [])) for g in s.get("groups", []))
         print(f"✅ {name}: {len(fixtures)} Fix | {len(results)} Res | {team_count} Teams")
 
     except Exception as e:
@@ -242,8 +215,24 @@ async def scrape_league(context, league):
     finally:
         await page.close()
 
+    return {
+        "slug": league["slug"],
+        "league": name,
+        "league_logo": league_logo,
+        "fixtures": fixtures,
+        "results": results,
+        "standings": standings,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+
 
 async def main():
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "live": {},
+        "leagues": {}
+    }
+
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(
             headless=True,
@@ -254,10 +243,16 @@ async def main():
             timezone_id="UTC",
             locale="en-GB"
         )
-        await scrape_all_live(context)
+        payload["live"] = await scrape_all_live(context)
         for league in LEAGUES:
-            await scrape_league(context, league)
+            payload["leagues"][league["slug"]] = await scrape_league(context, league)
         await browser.close()
+
+    os.makedirs("public", exist_ok=True)
+    with open("public/football.json", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+    print("💾 Saved public/football.json")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
