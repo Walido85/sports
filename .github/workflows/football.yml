@@ -24,7 +24,7 @@ jobs:
           playwright install chromium
 
       - name: Run scraper
-        run: python scraper.py
+        run: python football.py
 
       - name: Publish JSON to data branch
         run: |
