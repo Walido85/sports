@@ -80,7 +80,6 @@ MATCHES_JS = """() => {
         const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
         const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
 
-        // Resilient date extraction (works even if LiveScore changes span.jx)
         let matchDate = row.querySelector('span[data-id*="st-dt"]')?.innerText.trim() || row.querySelector('span.jx')?.innerText.trim() || "";
         if (!matchDate) {
             const spans = Array.from(row.querySelectorAll('span'));
@@ -112,33 +111,28 @@ MATCHES_JS = """() => {
 }"""
 
 STANDINGS_JS = """() => {
-    function getStats(row, teamId) {
-        const allDivs = row.querySelectorAll('div[data-id^="' + teamId + '_"]');
+    function getStats(teamId) {
+        const allDivs = document.querySelectorAll('div[data-id^="' + teamId + '_"]');
         let suffix = "";
         for (const d of allDivs) {
-            const did = d.getAttribute('data-id');
+            const did = d.getAttribute('data-id') || "";
             if (did.endsWith('_played')) {
                 suffix = did.replace(teamId + '_', '').replace('_played', '');
                 break;
             }
         }
         if (suffix) {
-            const g = (stat) => row.querySelector('div[data-id="' + teamId + '_' + suffix + '_' + stat + '"]')?.innerText?.trim() || "0";
-            return { played: g('played'), wins: g('wins'), draws: g('draws'), losses: g('losses'), goals_for: g('goalsFor'), goals_against: g('goalsAgainst'), goal_diff: g('goalsDiff'), points: g('points') };
-        }
-        // Fallback: collect numeric cells from row
-        const nums = Array.from(row.querySelectorAll('div[data-id], td'))
-            .filter(d => {
-                const id = d.getAttribute('data-id') || "";
-                const txt = (d.innerText || "").trim();
-                return id !== "c-pos" && id !== "c-nm" && /^-?\\d+$/.test(txt);
-            })
-            .map(d => d.innerText.trim());
-        if (nums.length >= 8) {
-            return { played: nums[0], wins: nums[1], draws: nums[2], losses: nums[3], goals_for: nums[4], goals_against: nums[5], goal_diff: nums[6], points: nums[7] };
-        }
-        if (nums.length >= 4) {
-            return { played: nums[0], wins: "0", draws: "0", losses: "0", goals_for: "0", goals_against: "0", goal_diff: nums[nums.length - 2], points: nums[nums.length - 1] };
+            const g = (stat) => document.querySelector('div[data-id="' + teamId + '_' + suffix + '_' + stat + '"]')?.innerText?.trim() || "0";
+            return {
+                played: g('played'),
+                wins: g('wins'),
+                draws: g('draws'),
+                losses: g('losses'),
+                goals_for: g('goalsFor'),
+                goals_against: g('goalsAgainst'),
+                goal_diff: g('goalsDiff'),
+                points: g('points')
+            };
         }
         return { played:"0", wins:"0", draws:"0", losses:"0", goals_for:"0", goals_against:"0", goal_diff:"0", points:"0" };
     }
@@ -153,13 +147,12 @@ STANDINGS_JS = """() => {
         const posMatch = (posEl?.innerText?.trim() || "").match(/\\d+/);
         const pos = posMatch ? posMatch[0] : "";
 
-        // Resilient: works without minified classes
         const teamLink = nameCell.querySelector('a') || nameCell;
         const teamName = (teamLink.innerText || "").split('\\n')[0].trim();
         const teamLogo = nameCell.querySelector('img')?.src || "";
         if (!teamName) return null;
 
-        return { position: pos, team: teamName, team_logo: teamLogo, ...getStats(row, teamId) };
+        return { position: pos, team: teamName, team_logo: teamLogo, ...getStats(teamId) };
     }
 
     const subTables = document.querySelectorAll('div[data-id^="lt-tb-all-"]');
@@ -171,7 +164,8 @@ STANDINGS_JS = """() => {
             const tabEl = document.querySelector('div[data-id="lt-tb-all-' + tabId + '-hdr"]') ||
                           document.querySelector('a[id="' + tabId + '__tab"]') ||
                           document.querySelector('div[id="tb-it_' + tabId + '"] a');
-            const groupName = tabEl?.innerText?.trim() || subId;
+            const rawName = (tabEl?.innerText?.trim() || "").replace(/\\s+/g, " ");
+            const groupName = (rawName && !rawName.startsWith("#")) ? rawName : "";
             const rows = sub.querySelectorAll('div[data-id^="rw-"]');
             const table = [];
             for (const row of rows) {
@@ -180,7 +174,8 @@ STANDINGS_JS = """() => {
             }
             if (table.length > 0) groups.push({ name: groupName, table });
         }
-        if (groups.length > 0) return { type: "groups", groups };
+        if (groups.length === 1) return { type: "single", table: groups[0].table };
+        if (groups.length > 1) return { type: "groups", groups };
     }
 
     const rows = document.querySelectorAll('div[data-id^="rw-"]');
@@ -195,7 +190,7 @@ STANDINGS_JS = """() => {
 
 def load_existing_history():
     try:
-        req = urllib.request.Request(HISTORY_URL, headers={"User-Agent": "TwensaScraper/2.0"})
+        req = urllib.request.Request(HISTORY_URL, headers={"User-Agent": "TwensaScraper/2.1"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -290,7 +285,6 @@ async def scrape_league(context, league, old_history):
     league_logo = ""
 
     try:
-        # 1. Main league page (fixtures + latest results + logo)
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         try:
             logo_el = await page.wait_for_selector('img[src*="stage"], img[src*="competition"], img.Ok', timeout=5000)
@@ -306,7 +300,6 @@ async def scrape_league(context, league, old_history):
         except Exception:
             pass
 
-        # 2. Dedicated /results/ page for deeper results history
         try:
             await page.goto(results_url, wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
@@ -315,10 +308,8 @@ async def scrape_league(context, league, old_history):
         except Exception:
             pass
 
-        # Merge with persistent history archive
         merged_results = merge_results(results, old_history.get(slug, []), max_items=150)
 
-        # 3. Standings page
         await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
         try:
             await page.wait_for_selector('div[data-id^="rw-"]', timeout=15000)
