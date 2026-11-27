@@ -14,8 +14,7 @@ sys.stdout.reconfigure(line_buffering=True)
 HISTORY_URL = "https://raw.githubusercontent.com/Walido85/sports/data/history.json"
 DETAILS_URL = "https://raw.githubusercontent.com/Walido85/sports/data/match_details.json"
 
-# Max match detail fetches per 10-minute GitHub Action run (keeps total run fast)
-MAX_DETAIL_FETCHES_PER_RUN = 30
+MAX_DETAIL_FETCHES_PER_RUN = 20
 DETAIL_CONCURRENCY = 5
 
 LEAGUES = [
@@ -30,8 +29,9 @@ LEAGUES = [
     {"slug": "caf-champions-league",  "name": "CAF Champions League",  "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"},
 ]
 
-# Scroll-and-collect JS for LiveScore's virtualized match lists (div[data-index])
-SCROLL_COLLECT_LIVE_JS = """async () => {
+# All JS blocks use raw strings (r""") so \n, \d, \s, \b are passed intact to JS.
+
+LIVE_JS = r"""async () => {
     const collected = new Map();
     const collectVisible = () => {
         const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
@@ -83,9 +83,9 @@ SCROLL_COLLECT_LIVE_JS = """async () => {
 
     collectVisible();
     let lastY = -1;
-    for (let step = 0; step < 18; step++) {
-        window.scrollBy(0, 750);
-        await new Promise(r => setTimeout(r, 220));
+    for (let step = 0; step < 8; step++) {
+        window.scrollBy(0, 850);
+        await new Promise(r => setTimeout(r, 180));
         collectVisible();
         const curY = window.scrollY;
         if (curY === lastY) break;
@@ -94,7 +94,7 @@ SCROLL_COLLECT_LIVE_JS = """async () => {
     return Array.from(collected.values());
 }"""
 
-SCROLL_COLLECT_MATCHES_JS = """async () => {
+MATCHES_JS = r"""async () => {
     const fixMap = new Map();
     const resMap = new Map();
 
@@ -134,7 +134,6 @@ SCROLL_COLLECT_MATCHES_JS = """async () => {
                     }
                 }
             }
-            // Strip embedded time from date (e.g. "28 NOV 16:00" -> "28 NOV")
             matchDate = matchDate.replace(/\b\d{1,2}:\d{2}\b/g, "").trim();
 
             const container = row.closest('div[data-index]');
@@ -165,11 +164,12 @@ SCROLL_COLLECT_MATCHES_JS = """async () => {
         }
     };
 
+    window.scrollTo(0, 0);
     collectVisible();
     let lastY = -1;
-    for (let step = 0; step < 16; step++) {
-        window.scrollBy(0, 800);
-        await new Promise(r => setTimeout(r, 220));
+    for (let step = 0; step < 6; step++) {
+        window.scrollBy(0, 850);
+        await new Promise(r => setTimeout(r, 180));
         collectVisible();
         const curY = window.scrollY;
         if (curY === lastY) break;
@@ -181,7 +181,7 @@ SCROLL_COLLECT_MATCHES_JS = """async () => {
     };
 }"""
 
-STANDINGS_JS = """() => {
+STANDINGS_JS = r"""() => {
     function getStats(teamId) {
         const allDivs = document.querySelectorAll('div[data-id^="' + teamId + '_"]');
         let suffix = "";
@@ -258,10 +258,28 @@ STANDINGS_JS = """() => {
     return { type: "single", table };
 }"""
 
+GROUP_LINKS_JS = r"""(basePath) => {
+    const urls = [];
+    const seen = new Set();
+    const links = document.querySelectorAll('a[href]');
+    for (const a of links) {
+        const href = a.getAttribute('href') || "";
+        if (!href.includes(basePath)) continue;
+        if (/group-[a-z0-9]/i.test(href) && !href.includes('/standings') && !href.includes('/results')) {
+            const full = href.startsWith('http') ? href : ('https://www.livescore.com' + href);
+            if (!seen.has(full)) {
+                seen.add(full);
+                urls.push(full);
+            }
+        }
+    }
+    return urls.slice(0, 8);
+}"""
+
 
 def load_json_url(url, label):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "TwensaScraper/3.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "TwensaScraper/3.1"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -292,7 +310,6 @@ def merge_matches(new_items, old_items, max_items=150):
 
 
 def parse_esd_to_iso(esd):
-    """Convert LiveScore Esd integer (YYYYMMDDHHMMSS UTC) to ISO-8601 UTC."""
     s = str(esd or "").strip()
     if len(s) == 14 and s.isdigit():
         try:
@@ -304,7 +321,6 @@ def parse_esd_to_iso(esd):
 
 
 def parse_scoreboard_payload(sb):
-    """Extract stadium, referee, kickoff_iso, incidents (goals/cards), stats, and lineups from LiveScore JSON."""
     if not isinstance(sb, dict):
         return {}
 
@@ -314,7 +330,6 @@ def parse_scoreboard_payload(sb):
     if kickoff_iso:
         details["kickoff_iso"] = kickoff_iso
 
-    # Stadium / Venue
     venue_name = sb.get("Vnm") or sb.get("Venue") or ""
     venue_city = sb.get("Vct") or sb.get("City") or ""
     venue_country = sb.get("Vco") or ""
@@ -325,7 +340,6 @@ def parse_scoreboard_payload(sb):
             "country": str(venue_country).strip(),
         }
 
-    # Referee (Arbitre)
     refs = sb.get("Refs") or []
     if isinstance(refs, list) and refs:
         first_ref = refs[0]
@@ -340,11 +354,9 @@ def parse_scoreboard_payload(sb):
         elif isinstance(first_ref, str) and first_ref.strip():
             details["referee"] = {"name": first_ref.strip(), "country": ""}
 
-    # Attendance
     if sb.get("Vsp"):
         details["attendance"] = str(sb.get("Vsp"))
 
-    # Match Stats (possession, shots, corners, fouls, cards, saves)
     raw_stats = sb.get("Stat") or []
     if isinstance(raw_stats, list) and len(raw_stats) >= 2:
         h_st = raw_stats[0] if isinstance(raw_stats[0], dict) else {}
@@ -360,7 +372,6 @@ def parse_scoreboard_payload(sb):
             ("yellow_cards", "Ycs"),
             ("red_cards", "Rcs"),
             ("saves", "Gks"),
-            ("throw_ins", "Ths"),
         ]
         parsed_stats = {}
         for label, key in stat_map:
@@ -372,7 +383,6 @@ def parse_scoreboard_payload(sb):
         if parsed_stats:
             details["stats"] = parsed_stats
 
-    # Match Events / Incidents (goals, penalties, own goals, cards)
     incs_root = sb.get("Incs") or {}
     events = []
     if isinstance(incs_root, dict):
@@ -383,7 +393,6 @@ def parse_scoreboard_payload(sb):
             for inc in half_list:
                 if not isinstance(inc, dict):
                     continue
-                it_code = inc.get("IT")
                 ev_type = {
                     36: "goal",
                     37: "penalty_goal",
@@ -391,7 +400,7 @@ def parse_scoreboard_payload(sb):
                     43: "yellow_card",
                     44: "second_yellow",
                     45: "red_card",
-                }.get(it_code)
+                }.get(inc.get("IT"))
                 if not ev_type:
                     continue
                 minute = str(inc.get("Min", ""))
@@ -412,7 +421,6 @@ def parse_scoreboard_payload(sb):
     if events:
         details["events"] = events
 
-    # Lineups & Coaches (Team Details)
     lu_root = sb.get("Lu") or []
     if isinstance(lu_root, list) and len(lu_root) >= 2:
         lineups = {}
@@ -448,16 +456,13 @@ def parse_scoreboard_payload(sb):
 
 
 async def fetch_match_details(context, match_obj):
-    """Fetch stadium, referee, stats, events & lineups via LiveScore CDN API inside Playwright context."""
     eid = match_obj.get("eid")
     if not eid:
         return {}
 
     endpoints = [
         f"https://prod-cdn-public-api.livescore.com/v1/api/app/scoreboard/soccer/{eid}?locale=en",
-        f"https://prod-cdn-public-api.livescore.com/v1/api/app/info/soccer/{eid}?locale=en",
         f"https://prod-cdn-public-api.livescore.com/v1/api/app/statistics/soccer/{eid}?locale=en",
-        f"https://prod-cdn-public-api.livescore.com/v1/api/app/lineups/soccer/{eid}?locale=en",
     ]
     merged_raw = {}
     for ep in endpoints:
@@ -510,16 +515,27 @@ def attach_form_to_standings(standings, results):
     return standings
 
 
+async def dismiss_cookies(page):
+    try:
+        btn = await page.query_selector("#onetrust-accept-btn-handler")
+        if btn:
+            await btn.click()
+            await page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+
 async def scrape_all_live(context):
     page = await context.new_page()
     live_matches = []
     try:
         await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
+        await dismiss_cookies(page)
         try:
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=12000)
         except Exception:
             pass
-        live_matches = await page.evaluate(SCROLL_COLLECT_LIVE_JS)
+        live_matches = await page.evaluate(LIVE_JS)
     except Exception as e:
         print(f"❌ Live: {e}")
     finally:
@@ -538,7 +554,6 @@ async def scrape_league(context, league, old_history):
     slug = league["slug"]
     name = league["name"]
     url = league["url"]
-    fixtures_url = url + "fixtures/"
     results_url = url + "results/"
     standings_url = url + "standings/"
 
@@ -548,8 +563,9 @@ async def scrape_league(context, league, old_history):
     league_logo = ""
 
     try:
-        # 1. Dedicated /fixtures/ page (captures ALL groups in CAF CL, UCL, UEL & domestic leagues)
-        await page.goto(fixtures_url, wait_until="domcontentloaded", timeout=60000)
+        # 1. Main league page (LiveScore's real Fixtures view)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await dismiss_cookies(page)
         try:
             logo_el = await page.wait_for_selector('img[src*="stage"], img[src*="competition"], img.Ok', timeout=5000)
             league_logo = await logo_el.get_attribute("src") if logo_el else ""
@@ -558,28 +574,35 @@ async def scrape_league(context, league, old_history):
 
         try:
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=12000)
-            fix_data = await page.evaluate(SCROLL_COLLECT_MATCHES_JS)
-            fixtures = fix_data.get("fixtures", [])
-            results = fix_data.get("results", [])
+            data = await page.evaluate(MATCHES_JS)
+            fixtures = data.get("fixtures", [])
+            results = data.get("results", [])
+        except Exception as e:
+            print(f"⚠️ {name} fixtures: {e}")
+
+        # 1b. If multi-group cup (e.g. CAF Champions League), also scan Group B/C/D links
+        base_path = url.replace("https://www.livescore.com", "")
+        try:
+            group_urls = await page.evaluate(GROUP_LINKS_JS, base_path)
+            for g_url in group_urls:
+                if g_url.rstrip("/") == url.rstrip("/"):
+                    continue
+                try:
+                    await page.goto(g_url, wait_until="domcontentloaded", timeout=30000)
+                    await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=6000)
+                    g_data = await page.evaluate(MATCHES_JS)
+                    fixtures = merge_matches(fixtures, g_data.get("fixtures", []), max_items=100)
+                    results = merge_matches(g_data.get("results", []), results, max_items=150)
+                except Exception:
+                    continue
         except Exception:
             pass
-
-        # Fallback to overview URL if /fixtures/ had no rows
-        if not fixtures:
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
-                ov_data = await page.evaluate(SCROLL_COLLECT_MATCHES_JS)
-                fixtures = ov_data.get("fixtures", [])
-                results = merge_matches(ov_data.get("results", []), results, max_items=150)
-            except Exception:
-                pass
 
         # 2. Dedicated /results/ page
         try:
             await page.goto(results_url, wait_until="domcontentloaded", timeout=45000)
             await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
-            res_data = await page.evaluate(SCROLL_COLLECT_MATCHES_JS)
+            res_data = await page.evaluate(MATCHES_JS)
             results = merge_matches(res_data.get("results", []), results, max_items=150)
         except Exception:
             pass
@@ -592,8 +615,8 @@ async def scrape_league(context, league, old_history):
             await page.wait_for_selector('div[data-id^="rw-"]', timeout=15000)
             standings = await page.evaluate(STANDINGS_JS)
             standings = attach_form_to_standings(standings, merged_results)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ {name} standings: {e}")
 
         team_count = (
             len(standings.get("table", []))
@@ -628,20 +651,17 @@ async def scrape_league(context, league, old_history):
 
 
 async def enrich_matches_with_details(context, payload, details_cache):
-    """Enrich live matches + upcoming fixtures + recent results with stadium, referee, stats, events & lineups."""
     to_fetch = []
     seen_eids = set()
 
-    # Priority 1: All live matches (always refresh live stats/events)
     for m in payload.get("live", {}).get("matches", []):
         eid = m.get("eid")
         if eid and eid not in seen_eids:
             seen_eids.add(eid)
             to_fetch.append((m, True))
 
-    # Priority 2: Upcoming fixtures (next 5 per league) + latest 3 results per league
     for lg in payload.get("leagues", {}).values():
-        for m in (lg.get("fixtures") or [])[:5]:
+        for m in (lg.get("fixtures") or [])[:4]:
             eid = m.get("eid")
             if eid and eid not in seen_eids:
                 seen_eids.add(eid)
@@ -649,7 +669,7 @@ async def enrich_matches_with_details(context, payload, details_cache):
                     m.update(details_cache[eid])
                 else:
                     to_fetch.append((m, False))
-        for m in (lg.get("results") or [])[:3]:
+        for m in (lg.get("results") or [])[:2]:
             eid = m.get("eid")
             if eid and eid not in seen_eids:
                 seen_eids.add(eid)
@@ -674,7 +694,6 @@ async def enrich_matches_with_details(context, payload, details_cache):
         await asyncio.gather(*(worker(m) for m, _ in batch))
         print(f"🔎 Enriched {len(batch)} matches with stadium, referee, stats, events & lineups")
 
-    # Apply cached details to all remaining matches in payload
     for lg in payload.get("leagues", {}).values():
         for bucket in ("fixtures", "results"):
             for m in lg.get(bucket, []):
@@ -683,7 +702,6 @@ async def enrich_matches_with_details(context, payload, details_cache):
                     for k, v in details_cache[eid].items():
                         m.setdefault(k, v)
 
-    # Keep cache bounded to latest 500 matches
     if len(details_cache) > 500:
         keys = list(details_cache.keys())[-500:]
         details_cache = {k: details_cache[k] for k in keys}
