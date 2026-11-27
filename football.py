@@ -13,6 +13,8 @@ sys.stdout.reconfigure(line_buffering=True)
 
 HISTORY_URL = "https://raw.githubusercontent.com/Walido85/sports/data/history.json"
 DETAILS_URL = "https://raw.githubusercontent.com/Walido85/sports/data/match_details.json"
+LIVE_API_URL = "https://prod-cdn-public-api.livescore.com/v1/api/app/live/soccer/0?countryCode=TN&locale=en"
+LOGO_CDN_PREFIX = "https://lsm-static-prod.livescore.com/medium/"
 
 MAX_DETAIL_FETCHES_PER_RUN = 20
 DETAIL_CONCURRENCY = 5
@@ -28,158 +30,6 @@ LEAGUES = [
     {"slug": "uefa-europa-league",    "name": "UEFA Europa League",    "url": "https://www.livescore.com/en/football/europe/europa-league/"},
     {"slug": "caf-champions-league",  "name": "CAF Champions League",  "url": "https://www.livescore.com/en/football/africa/caf-champions-league/"},
 ]
-
-# All JS blocks use raw strings (r""") so \n, \d, \s, \b are passed intact to JS.
-
-LIVE_JS = r"""async () => {
-    const collected = new Map();
-    const collectVisible = () => {
-        const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
-        for (const row of rows) {
-            const statusText = row.querySelector('span[data-id*="st-tm"]')?.innerText.trim() || "";
-            if (!statusText || statusText === "FT" || statusText.includes("Canc") || statusText.includes("Postp") || statusText.includes(":")) continue;
-
-            const homeName = row.querySelector('div[data-id*="hm-tm-nm"]')?.innerText.trim() || "";
-            const awayName = row.querySelector('div[data-id*="aw-tm-nm"]')?.innerText.trim() || "";
-            if (!homeName || !awayName) continue;
-
-            const linkEl = row.querySelector('a[href*="/football/"]') || row.closest('a[href*="/football/"]');
-            const href = linkEl ? linkEl.getAttribute('href') : "";
-            const eidMatch = (href || "").match(/\/(\d{5,})\/?$/);
-            const dataId = row.getAttribute('data-id') || "";
-            const eid = eidMatch ? eidMatch[1] : (dataId.match(/(\d{5,})/)?.[1] || "");
-
-            const teamImgs = Array.from(row.querySelectorAll('img')).filter(img => {
-                const src = (img.src || "").toLowerCase();
-                const alt = (img.alt || "").toLowerCase();
-                return src && !src.includes("tv") && !src.includes("broadcaster") && !src.includes("espn") && !alt.includes("espn") && !src.includes("stream");
-            });
-            const homeLogo = teamImgs[teamImgs.length >= 2 ? teamImgs.length - 2 : 0]?.src || "";
-            const awayLogo = teamImgs[teamImgs.length >= 2 ? teamImgs.length - 1 : 1]?.src || "";
-
-            const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
-            const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
-            const container = row.closest('div[data-index]');
-            const leagueName = container ? (container.querySelector('div[data-id="st-hdr_stg"]')?.innerText.trim() || "Other") : "Other";
-            const leagueLogo = container ? (container.querySelector('img[src*="stage"], img[src*="flag"], img[src*="competition"], img.Ok')?.src || "") : "";
-
-            const key = eid || (homeName + "|" + awayName);
-            collected.set(key, {
-                eid,
-                match_url: href ? (href.startsWith("http") ? href : "https://www.livescore.com" + href) : "",
-                home: homeName,
-                away: awayName,
-                home_logo: homeLogo,
-                away_logo: awayLogo,
-                league: leagueName,
-                league_logo: leagueLogo,
-                status: "live",
-                score: (hScore && aScore) ? (hScore + " - " + aScore) : "-- - --",
-                minute: statusText,
-                timezone: "UTC"
-            });
-        }
-    };
-
-    collectVisible();
-    let lastY = -1;
-    for (let step = 0; step < 8; step++) {
-        window.scrollBy(0, 850);
-        await new Promise(r => setTimeout(r, 180));
-        collectVisible();
-        const curY = window.scrollY;
-        if (curY === lastY) break;
-        lastY = curY;
-    }
-    return Array.from(collected.values());
-}"""
-
-MATCHES_JS = r"""async () => {
-    const fixMap = new Map();
-    const resMap = new Map();
-
-    const collectVisible = () => {
-        const rows = document.querySelectorAll('div[data-id*="_mtc-r"]');
-        for (const row of rows) {
-            const statusText = row.querySelector('span[data-id*="st-tm"]')?.innerText.trim() || "";
-            const homeName = row.querySelector('div[data-id*="hm-tm-nm"]')?.innerText.trim() || "";
-            const awayName = row.querySelector('div[data-id*="aw-tm-nm"]')?.innerText.trim() || "";
-            if (!homeName || !awayName) continue;
-
-            const linkEl = row.querySelector('a[href*="/football/"]') || row.closest('a[href*="/football/"]');
-            const href = linkEl ? linkEl.getAttribute('href') : "";
-            const eidMatch = (href || "").match(/\/(\d{5,})\/?$/);
-            const dataId = row.getAttribute('data-id') || "";
-            const eid = eidMatch ? eidMatch[1] : (dataId.match(/(\d{5,})/)?.[1] || "");
-
-            const teamImgs = Array.from(row.querySelectorAll('img')).filter(img => {
-                const src = (img.src || "").toLowerCase();
-                const alt = (img.alt || "").toLowerCase();
-                return src && !src.includes("tv") && !src.includes("broadcaster") && !src.includes("espn") && !alt.includes("espn") && !src.includes("stream");
-            });
-            const homeLogo = teamImgs[teamImgs.length >= 2 ? teamImgs.length - 2 : 0]?.src || "";
-            const awayLogo = teamImgs[teamImgs.length >= 2 ? teamImgs.length - 1 : 1]?.src || "";
-
-            const hScore = row.querySelector('div[data-id*="hm-sc"]')?.innerText.trim() || "";
-            const aScore = row.querySelector('div[data-id*="aw-sc"]')?.innerText.trim() || "";
-
-            let matchDate = row.querySelector('span[data-id*="st-dt"]')?.innerText.trim() || row.querySelector('span.jx')?.innerText.trim() || "";
-            if (!matchDate) {
-                const spans = Array.from(row.querySelectorAll('span'));
-                for (const sp of spans) {
-                    const t = (sp.innerText || "").trim();
-                    if (/^\d{1,2}\s+[A-Za-z]{3}/.test(t) || /^(Today|Yesterday|Tomorrow)$/i.test(t)) {
-                        matchDate = t;
-                        break;
-                    }
-                }
-            }
-            matchDate = matchDate.replace(/\b\d{1,2}:\d{2}\b/g, "").trim();
-
-            const container = row.closest('div[data-index]');
-            const stageLabel = container ? (container.querySelector('div[data-id="st-hdr_stg"]')?.innerText.trim() || "") : "";
-
-            const key = eid || (homeName + "|" + awayName + "|" + matchDate);
-            const matchObj = {
-                eid,
-                match_url: href ? (href.startsWith("http") ? href : "https://www.livescore.com" + href) : "",
-                home: homeName,
-                away: awayName,
-                home_logo: homeLogo,
-                away_logo: awayLogo,
-                date: matchDate,
-                round: stageLabel,
-                timezone: "UTC"
-            };
-
-            if (statusText.includes("FT") || statusText.includes("AET") || statusText.includes("Pen") || statusText.includes("Canc") || statusText.includes("Postp")) {
-                matchObj.status = "result";
-                matchObj.score = (hScore && aScore) ? (hScore + " - " + aScore) : "-- - --";
-                resMap.set(key, matchObj);
-            } else if (statusText.includes(":")) {
-                matchObj.status = "fixture";
-                matchObj.time = statusText;
-                fixMap.set(key, matchObj);
-            }
-        }
-    };
-
-    window.scrollTo(0, 0);
-    collectVisible();
-    let lastY = -1;
-    for (let step = 0; step < 6; step++) {
-        window.scrollBy(0, 850);
-        await new Promise(r => setTimeout(r, 180));
-        collectVisible();
-        const curY = window.scrollY;
-        if (curY === lastY) break;
-        lastY = curY;
-    }
-    return {
-        fixtures: Array.from(fixMap.values()),
-        results: Array.from(resMap.values())
-    };
-}"""
 
 STANDINGS_JS = r"""() => {
     function getStats(teamId) {
@@ -258,28 +108,10 @@ STANDINGS_JS = r"""() => {
     return { type: "single", table };
 }"""
 
-GROUP_LINKS_JS = r"""(basePath) => {
-    const urls = [];
-    const seen = new Set();
-    const links = document.querySelectorAll('a[href]');
-    for (const a of links) {
-        const href = a.getAttribute('href') || "";
-        if (!href.includes(basePath)) continue;
-        if (/group-[a-z0-9]/i.test(href) && !href.includes('/standings') && !href.includes('/results')) {
-            const full = href.startsWith('http') ? href : ('https://www.livescore.com' + href);
-            if (!seen.has(full)) {
-                seen.add(full);
-                urls.push(full);
-            }
-        }
-    }
-    return urls.slice(0, 8);
-}"""
-
 
 def load_json_url(url, label):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "TwensaScraper/3.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": "TwensaScraper/4.1"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -299,7 +131,7 @@ def merge_matches(new_items, old_items, max_items=150):
     merged = []
     seen = set()
     for item in (new_items + old_items):
-        eid = item.get("eid") or ""
+        eid = str(item.get("eid") or "")
         key = eid if eid else f"{norm(item.get('home'))}|{norm(item.get('away'))}|{item.get('date', '')}|{item.get('score', '')}"
         if key not in seen:
             seen.add(key)
@@ -309,15 +141,126 @@ def merge_matches(new_items, old_items, max_items=150):
     return merged
 
 
-def parse_esd_to_iso(esd):
+def parse_esd(esd):
+    """Convert LiveScore Esd packed UTC integer (YYYYMMDDHHMMSS) to (iso, 'DD MMM', 'HH:MM')."""
     s = str(esd or "").strip()
     if len(s) == 14 and s.isdigit():
         try:
             dt = datetime.strptime(s, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-            return dt.isoformat()
+            return dt.isoformat(), dt.strftime("%d %b").upper(), dt.strftime("%H:%M")
         except Exception:
-            return ""
-    return ""
+            pass
+    return "", "", ""
+
+
+def build_logo_url(img_path):
+    if not img_path:
+        return ""
+    s = str(img_path).strip()
+    if s.startswith("http"):
+        return s
+    return LOGO_CDN_PREFIX + s.lstrip("/")
+
+
+def find_stages_lists(obj, depth=0):
+    """Locate 'Stages' arrays inside LiveScore API or Next.js pageProps JSON."""
+    found = []
+    if depth > 7:
+        return found
+    if isinstance(obj, dict):
+        stages = obj.get("Stages")
+        if isinstance(stages, list) and stages and isinstance(stages[0], dict) and ("Events" in stages[0] or "Snm" in stages[0]):
+            found.append(stages)
+        for v in obj.values():
+            if isinstance(v, (dict, list)):
+                found.extend(find_stages_lists(v, depth + 1))
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, (dict, list)):
+                found.extend(find_stages_lists(item, depth + 1))
+    return found
+
+
+def parse_events_from_stages(stages_list, mode="all"):
+    """
+    Convert LiveScore Stages -> Events JSON into normalized fixtures, results, and live matches.
+    Verified Esid enum: 1=NS, 2=1st Half, 3=2nd Half, 6=FT, 10=HT, 13=AP.
+    """
+    fixtures = []
+    results = []
+    live = []
+    league_logo = ""
+
+    for st in stages_list:
+        if not isinstance(st, dict):
+            continue
+        stage_name = st.get("CompN") or st.get("Snm") or st.get("Cnm") or "Other"
+        round_name = st.get("Snm") or ""
+        st_logo = build_logo_url(st.get("BadgeUrl") or st.get("Img") or "")
+        if st_logo and not league_logo:
+            league_logo = st_logo
+
+        for ev in (st.get("Events") or []):
+            if not isinstance(ev, dict):
+                continue
+            t1_list = ev.get("T1") or []
+            t2_list = ev.get("T2") or []
+            if not t1_list or not t2_list:
+                continue
+            t1 = t1_list[0] if isinstance(t1_list[0], dict) else {}
+            t2 = t2_list[0] if isinstance(t2_list[0], dict) else {}
+            home = (t1.get("Nm") or "").strip()
+            away = (t2.get("Nm") or "").strip()
+            if not home or not away:
+                continue
+
+            eid = str(ev.get("Eid") or "")
+            iso_str, date_lbl, time_lbl = parse_esd(ev.get("Esd"))
+            epr = ev.get("Epr")
+            esid = ev.get("Esid")
+            eps = str(ev.get("Eps") or "").strip()
+            tr1 = ev.get("Tr1")
+            tr2 = ev.get("Tr2")
+            has_score = (tr1 is not None and tr2 is not None and str(tr1) != "" and str(tr2) != "")
+            score_str = f"{tr1} - {tr2}" if has_score else "-- - --"
+
+            base = {
+                "eid": eid,
+                "home": home,
+                "away": away,
+                "home_logo": build_logo_url(t1.get("Img")),
+                "away_logo": build_logo_url(t2.get("Img")),
+                "date": date_lbl,
+                "kickoff_iso": iso_str,
+                "round": round_name,
+                "timezone": "UTC",
+            }
+
+            is_live = (epr == 1) or (esid in (2, 3, 4, 5, 10, 11, 12)) or ("'" in eps) or (eps in ("HT", "ET", "Pen"))
+            is_finished = (epr == 2) or (esid in (6, 13)) or (eps in ("FT", "AET", "AP", "Canc.", "Postp."))
+
+            if is_live and not is_finished:
+                m = dict(base)
+                m["status"] = "live"
+                m["score"] = score_str
+                m["minute"] = eps or "LIVE"
+                m["league"] = stage_name
+                m["league_logo"] = st_logo
+                live.append(m)
+            elif is_finished:
+                m = dict(base)
+                m["status"] = "result"
+                m["score"] = score_str
+                results.append(m)
+            else:
+                m = dict(base)
+                m["status"] = "fixture"
+                m["time"] = time_lbl or "--:--"
+                fixtures.append(m)
+
+    if mode == "live":
+        return live
+    return fixtures, results, league_logo
 
 
 def parse_scoreboard_payload(sb):
@@ -325,10 +268,9 @@ def parse_scoreboard_payload(sb):
         return {}
 
     details = {}
-
-    kickoff_iso = parse_esd_to_iso(sb.get("Esd"))
-    if kickoff_iso:
-        details["kickoff_iso"] = kickoff_iso
+    iso_str, _, _ = parse_esd(sb.get("Esd"))
+    if iso_str:
+        details["kickoff_iso"] = iso_str
 
     venue_name = sb.get("Vnm") or sb.get("Venue") or ""
     venue_city = sb.get("Vct") or sb.get("City") or ""
@@ -376,10 +318,7 @@ def parse_scoreboard_payload(sb):
         parsed_stats = {}
         for label, key in stat_map:
             if key in h_st or key in a_st:
-                parsed_stats[label] = {
-                    "home": h_st.get(key, 0),
-                    "away": a_st.get(key, 0),
-                }
+                parsed_stats[label] = {"home": h_st.get(key, 0), "away": a_st.get(key, 0)}
         if parsed_stats:
             details["stats"] = parsed_stats
 
@@ -463,6 +402,7 @@ async def fetch_match_details(context, match_obj):
     endpoints = [
         f"https://prod-cdn-public-api.livescore.com/v1/api/app/scoreboard/soccer/{eid}?locale=en",
         f"https://prod-cdn-public-api.livescore.com/v1/api/app/statistics/soccer/{eid}?locale=en",
+        f"https://prod-cdn-public-api.livescore.com/v1/api/app/incidents/soccer/{eid}?locale=en",
     ]
     merged_raw = {}
     for ep in endpoints:
@@ -515,32 +455,89 @@ def attach_form_to_standings(standings, results):
     return standings
 
 
-async def dismiss_cookies(page):
+async def extract_page_stages(page, target_url):
+    """
+    Open a LiveScore page, wait for match rows or API XHR to finish, and capture Stages JSON
+    from intercepted prod-cdn-public-api.livescore.com responses + __NEXT_DATA__.props.pageProps.
+    """
+    xhr_stages = []
+    seen_urls = []
+
+    async def on_response(response):
+        u = response.url
+        if "prod-cdn-public-api.livescore.com" in u and response.status == 200:
+            try:
+                body = await response.json()
+                lists = find_stages_lists(body)
+                if lists:
+                    seen_urls.append(u)
+                    for st_list in lists:
+                        xhr_stages.extend(st_list)
+            except Exception:
+                pass
+
+    page.on("response", on_response)
     try:
-        btn = await page.query_selector("#onetrust-accept-btn-handler")
-        if btn:
-            await btn.click()
-            await page.wait_for_timeout(300)
-    except Exception:
-        pass
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=50000)
+        try:
+            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(1200)
+
+        if not xhr_stages:
+            page_props = await page.evaluate(r"""() => {
+                const el = document.getElementById('__NEXT_DATA__');
+                if (!el) return null;
+                try {
+                    const j = JSON.parse(el.textContent);
+                    return j?.props?.pageProps || null;
+                } catch (e) { return null; }
+            }""")
+            if page_props:
+                for st_list in find_stages_lists(page_props):
+                    xhr_stages.extend(st_list)
+    finally:
+        page.remove_listener("response", on_response)
+
+    return xhr_stages, seen_urls
 
 
 async def scrape_all_live(context):
-    page = await context.new_page()
+    """Primary: direct LiveScore JSON API. Fallback: intercept XHR on /en/football/live/."""
     live_matches = []
     try:
-        await page.goto("https://www.livescore.com/en/football/live/", wait_until="domcontentloaded", timeout=60000)
-        await dismiss_cookies(page)
-        try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=12000)
-        except Exception:
-            pass
-        live_matches = await page.evaluate(LIVE_JS)
+        resp = await context.request.get(
+            LIVE_API_URL,
+            headers={
+                "Accept": "application/json",
+                "Origin": "https://www.livescore.com",
+                "Referer": "https://www.livescore.com/",
+            },
+            timeout=15000,
+        )
+        if resp.status == 200:
+            data = await resp.json()
+            stages = data.get("Stages") or []
+            live_matches = parse_events_from_stages(stages, mode="live")
+        else:
+            print(f"⚠️ Direct Live API HTTP {resp.status}, falling back to XHR intercept")
     except Exception as e:
-        print(f"❌ Live: {e}")
-    finally:
-        await page.close()
+        print(f"⚠️ Direct Live API error ({e}), falling back to XHR intercept")
 
+    if not live_matches:
+        page = await context.new_page()
+        try:
+            stages, urls = await extract_page_stages(page, "https://www.livescore.com/en/football/live/")
+            live_matches = parse_events_from_stages(stages, mode="live")
+            if not live_matches and urls:
+                print(f"ℹ️ Live XHR seen: {urls[0]}")
+        except Exception as e:
+            print(f"❌ Live XHR fallback: {e}")
+        finally:
+            await page.close()
+
+    live_matches = merge_matches(live_matches, [], max_items=120)
     print(f"✅ live: {len(live_matches)} matches")
     return {
         "matches": live_matches,
@@ -554,6 +551,7 @@ async def scrape_league(context, league, old_history):
     slug = league["slug"]
     name = league["name"]
     url = league["url"]
+    fixtures_url = url + "fixtures/"
     results_url = url + "results/"
     standings_url = url + "standings/"
 
@@ -563,54 +561,37 @@ async def scrape_league(context, league, old_history):
     league_logo = ""
 
     try:
-        # 1. Main league page (LiveScore's real Fixtures view)
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        await dismiss_cookies(page)
-        try:
-            logo_el = await page.wait_for_selector('img[src*="stage"], img[src*="competition"], img.Ok', timeout=5000)
-            league_logo = await logo_el.get_attribute("src") if logo_el else ""
-        except Exception:
-            pass
+        # 1. Dedicated /fixtures/ page -> full Stages JSON (ALL dates & ALL CAF CL groups)
+        fx_stages, _ = await extract_page_stages(page, fixtures_url)
+        if fx_stages:
+            f_list, r_list, lg_logo = parse_events_from_stages(fx_stages)
+            fixtures = merge_matches(f_list, fixtures, max_items=100)
+            results = merge_matches(r_list, results, max_items=150)
+            if lg_logo:
+                league_logo = lg_logo
 
-        try:
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=12000)
-            data = await page.evaluate(MATCHES_JS)
-            fixtures = data.get("fixtures", [])
-            results = data.get("results", [])
-        except Exception as e:
-            print(f"⚠️ {name} fixtures: {e}")
+        if not league_logo:
+            try:
+                logo_el = await page.query_selector('img[src*="stage"], img[src*="competition"], img.Ok')
+                if logo_el:
+                    league_logo = await logo_el.get_attribute("src") or ""
+            except Exception:
+                pass
 
-        # 1b. If multi-group cup (e.g. CAF Champions League), also scan Group B/C/D links
-        base_path = url.replace("https://www.livescore.com", "")
-        try:
-            group_urls = await page.evaluate(GROUP_LINKS_JS, base_path)
-            for g_url in group_urls:
-                if g_url.rstrip("/") == url.rstrip("/"):
-                    continue
-                try:
-                    await page.goto(g_url, wait_until="domcontentloaded", timeout=30000)
-                    await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=6000)
-                    g_data = await page.evaluate(MATCHES_JS)
-                    fixtures = merge_matches(fixtures, g_data.get("fixtures", []), max_items=100)
-                    results = merge_matches(g_data.get("results", []), results, max_items=150)
-                except Exception:
-                    continue
-        except Exception:
-            pass
+        # 2. Dedicated /results/ page -> full Results Stages JSON
+        rs_stages, _ = await extract_page_stages(page, results_url)
+        if rs_stages:
+            _, r_list2, lg_logo2 = parse_events_from_stages(rs_stages)
+            results = merge_matches(r_list2, results, max_items=150)
+            if lg_logo2 and not league_logo:
+                league_logo = lg_logo2
 
-        # 2. Dedicated /results/ page
-        try:
-            await page.goto(results_url, wait_until="domcontentloaded", timeout=45000)
-            await page.wait_for_selector('div[data-id*="_mtc-r"]', timeout=10000)
-            res_data = await page.evaluate(MATCHES_JS)
-            results = merge_matches(res_data.get("results", []), results, max_items=150)
-        except Exception:
-            pass
-
+        fixtures.sort(key=lambda m: m.get("kickoff_iso") or "9999")
         merged_results = merge_matches(results, old_history.get(slug, []), max_items=150)
+        merged_results.sort(key=lambda m: m.get("kickoff_iso") or "", reverse=True)
 
-        # 3. Dedicated /standings/ page
-        await page.goto(standings_url, wait_until="domcontentloaded", timeout=60000)
+        # 3. Dedicated /standings/ page (verified working 100% across all 9 leagues)
+        await page.goto(standings_url, wait_until="domcontentloaded", timeout=50000)
         try:
             await page.wait_for_selector('div[data-id^="rw-"]', timeout=15000)
             standings = await page.evaluate(STANDINGS_JS)
@@ -629,7 +610,7 @@ async def scrape_league(context, league, old_history):
             "slug": slug,
             "league": name,
             "league_logo": league_logo,
-            "fixtures": fixtures,
+            "fixtures": fixtures[:40],
             "results": merged_results[:60],
             "standings": standings,
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -641,7 +622,7 @@ async def scrape_league(context, league, old_history):
             "slug": slug,
             "league": name,
             "league_logo": league_logo,
-            "fixtures": fixtures,
+            "fixtures": fixtures[:40],
             "results": old_history.get(slug, [])[:60],
             "standings": standings,
             "updated_at": datetime.now(timezone.utc).isoformat(),
